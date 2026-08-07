@@ -1,0 +1,51 @@
+# --- NIGDY nie commituj tresci notatek ani indeksu ---
+chroma_db/
+index_manifest.json
+notatki/
+vault/
+notes/
+
+# Skrypty bootstrapujace maja CALA TRESC notatek wklejona w kodzie.
+# Wygladaja jak zwykly kod, a zawieraja: imie i nazwisko, adres, login
+# firmowy, numer albumu, oczekiwania placowe, dane partnerki.
+# To byl najpowazniejszy wyciek w tym repo - jedyny plik z danymi osobowymi,
+# ktory nie ma slowa "notatka" w nazwie i przez to nie rzuca sie w oczy.
+utworz_notatki.py
+utworz_notatki_2.py
+
+# Oceny testow recznych cytuja tresc odpowiedzi, w tym kwoty wynagrodzenia.
+wpisz_oceny.py
+
+# Przygotowania do rozmow: nazwiska realnych osob, obecny pracodawca,
+# strategia negocjacyjna. Nic z tego nie moze trafic do publicznego repo.
+rockwell.md
+ROCKWELL_*.md
+rozmowa-*.md
+
+# historia rozmow i zrzuty sesji - zawieraja tresc notatek w odpowiedziach
+rozmowy/
+zrzuty/
+
+# pliki przygotowane do przeniesienia do vaultu
+_do_vaultu*.md
+
+# wyniki testow moga zawierac fragmenty notatek w kolumnie 'odpowiedz'
+results.csv
+results*.csv
+questions.csv
+# podglad odpowiedzi do oceny recznej - zawiera fragmenty notatek
+do_oceny.txt
+do_oceny*.txt
+
+# --- standard ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.env
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

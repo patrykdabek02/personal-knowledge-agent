@@ -1,0 +1,266 @@
+{
+  "name": "Personal Knowledge Agent - RAG (lokalny)",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Personal Knowledge Agent\n\n**100% lokalnie.** Nic nie wychodzi poza te maszyne.\n\n**Zanim uruchomisz:**\n1. Ollama dziala (`ollama serve`)\n2. Search API dziala:\n   `uvicorn search_api:app --host 127.0.0.1 --port 8000`\n3. Indeks zbudowany (`python indexer.py --path ...`)\n\n**Adresy: 127.0.0.1, nie localhost.**\nNa Windowsie `localhost` idzie najpierw na\nIPv6 (::1), a API nasluchuje na IPv4 -\npolaczenie zostaje odrzucone.\n\n**Jesli n8n dziala w Dockerze:**\nzamien `127.0.0.1` na `host.docker.internal`\nw wezlach *Szukaj w Chroma* i *Ollama*.\n\n**Wydajnosc:** `think: false` wylacza blok\nrozumowania Qwen (ok. 4x szybciej).\n`num_ctx: 6144` zmniejsza zuzycie VRAM.\n\n**Prog podobienstwa** (`max_distance`)\nmusi byc taki sam jak MAX_DISTANCE w core.py!",
+        "height": 520,
+        "width": 420,
+        "color": 4
+      },
+      "id": "a1000000-0000-4000-8000-000000000001",
+      "name": "Instrukcja",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -160,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "pka-ask",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000002",
+      "name": "Webhook: pytanie",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        300,
+        200
+      ],
+      "webhookId": "b2000000-0000-4000-8000-000000000002"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8000/search",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ query: ($json.body ? $json.body.question : $json.question), k: 6, max_distance: 0.65 }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000003",
+      "name": "Szukaj w Chroma",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        520,
+        200
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1000000-0000-4000-8000-000000000001",
+              "leftValue": "={{ $json.in_scope }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000004",
+      "name": "Czy w zakresie?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        740,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Sklejamy znalezione fragmenty w prompt z twardym zakazem zmyslania.\nconst wh = $('Webhook: pytanie').first().json;\nconst question = (wh.body && wh.body.question) || wh.question || '';\nconst hits = $json.hits || [];\n\nconst context = hits.map((h, i) => {\n  const head = h.heading ? ' > ' + h.heading : '';\n  return `--- FRAGMENT ${i + 1} [zrodlo: ${h.source}${head}] (dystans ${h.distance}) ---\\n${h.text}`;\n}).join('\\n\\n');\n\nconst system = [\n  'Jestes asystentem osobistej bazy wiedzy. Odpowiadasz WYLACZNIE na podstawie fragmentow notatek podanych w sekcji KONTEKST.',\n  '',\n  'Zasady, ktorych nie wolno zlamac:',\n  '1. Nie korzystasz z wiedzy spoza KONTEKSTU. Nawet jesli znasz odpowiedz - nie uzywasz jej.',\n  '2. Po kazdym twierdzeniu podajesz zrodlo w nawiasie kwadratowym, np. [zrodlo: projekty/rag.md].',\n  '3. Zanim napiszesz, ze czegos nie ma, sprawdz KAZDY podany fragment po kolei. Odpowiedz moze byc w ktorymkolwiek z nich, takze czesciowa. Czesciowa odpowiedz z podaniem zrodla jest lepsza niz odmowa.',\n  '4. Dopiero gdy ZADEN fragment nie zawiera odpowiedzi, piszesz doslownie: Nie znalazlem tego w notatkach. Gdy odmawiasz, nie podajesz zadnego zrodla.',\n  '5. Jesli fragmenty sobie przecza, mowisz o tym wprost i cytujesz oba zrodla.',\n  '6. Odpowiadasz zwiezle, w jezyku pytania. Nie opisujesz swojego toku rozumowania.',\n  \n  '7. Piszesz wylacznie alfabetem lacinskim. Nie uzywasz cyrylicy.',\n  '8. Notatki sa pisane w PIERWSZEJ OSOBIE przez uzytkownika. Ty nie jestes uzytkownikiem. Zwracasz sie do niego w drugiej osobie: Twoje, wybrales, mieszkasz. Nigdy nie piszesz o uzytkowniku jestem, mieszkam, moje.'\n].join('\\n');\n\nconst user = `KONTEKST:\\n${context}\\n\\nPYTANIE: ${question}\\n\\nOdpowiedz zgodnie z zasadami. Pamietaj o cytowaniu zrodel.`;\n\nconst sources = [...new Set(hits.map(h => h.source))];\n\nreturn [{\n  json: {\n    question,\n    sources,\n    best_distance: $json.best_distance,\n    messages: [\n      { role: 'system', content: system },\n      { role: 'user', content: user }\n    ]\n  }\n}];"
+      },
+      "id": "a1000000-0000-4000-8000-000000000005",
+      "name": "Buduj prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:11434/api/chat",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'qwen3.5:9b', messages: $json.messages, stream: false, think: false, options: { temperature: 0.1, num_ctx: 6144, num_predict: 1200 } }) }}",
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000006",
+      "name": "Ollama: qwen3.5",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1180,
+        100
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Czyscimy blok <think> (Qwen potrafi go zwrocic mimo think:false)\n// i pilnujemy, zeby nigdy nie zwrocic pustej odpowiedzi.\nconst raw = $json.message?.content || '';\n\nfunction stripThinking(text) {\n  let out = text.replace(/<think>[\\s\\S]*?<\\/think>/gi, '').trim();\n\n  if (out.includes('</think>')) {\n    const tail = out.split('</think>').pop().trim();\n    if (tail) return tail;\n    out = out.split('</think>')[0].trim();\n  }\n  if (out.includes('<think>')) {\n    const head = out.split('<think>')[0].trim();\n    if (head) return head;\n    out = out.replace(/<\\/?think>/gi, '').trim();\n  }\n  return out.replace(/<\\/?think>/gi, '').trim();\n}\n\nlet answer = stripThinking(raw);\nif (!answer) {\n  answer = '(model zwrocil pusta odpowiedz - sprawdz num_predict i think w wezle Ollama)';\n}\n\nconst prev = $('Buduj prompt').first().json;\n\nreturn [{\n  json: {\n    question: prev.question,\n    answer,\n    sources: prev.sources,\n    in_scope: true,\n    best_distance: prev.best_distance\n  }\n}];"
+      },
+      "id": "a1000000-0000-4000-8000-000000000007",
+      "name": "Formatuj odpowiedz",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Zaden fragment nie przeszedl progu podobienstwa -> agent NIE zmysla.\n// Model w ogole nie jest wywolywany, wiec odpowiedz wraca natychmiast.\nconst wh = $('Webhook: pytanie').first().json;\nconst question = (wh.body && wh.body.question) || wh.question || '';\n\nreturn [{\n  json: {\n    question,\n    answer: 'Nie znalazlem tego w notatkach.',\n    sources: [],\n    in_scope: false,\n    best_distance: $json.best_distance\n  }\n}];"
+      },
+      "id": "a1000000-0000-4000-8000-000000000008",
+      "name": "Odmowa (poza zakresem)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "firstIncomingItem",
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000009",
+      "name": "Odpowiedz",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1620,
+        200
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook: pytanie": {
+      "main": [
+        [
+          {
+            "node": "Szukaj w Chroma",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Szukaj w Chroma": {
+      "main": [
+        [
+          {
+            "node": "Czy w zakresie?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Czy w zakresie?": {
+      "main": [
+        [
+          {
+            "node": "Buduj prompt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Odmowa (poza zakresem)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buduj prompt": {
+      "main": [
+        [
+          {
+            "node": "Ollama: qwen3.5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama: qwen3.5": {
+      "main": [
+        [
+          {
+            "node": "Formatuj odpowiedz",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Formatuj odpowiedz": {
+      "main": [
+        [
+          {
+            "node": "Odpowiedz",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Odmowa (poza zakresem)": {
+      "main": [
+        [
+          {
+            "node": "Odpowiedz",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "personal-knowledge-agent-local"
+  },
+  "tags": []
+}

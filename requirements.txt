@@ -1,0 +1,24 @@
+# Personal Knowledge Agent - zaleznosci
+#
+# Instalacja:  pip install -r requirements.txt
+#
+# Uwaga: to NIE jest cala lista tego, czego projekt potrzebuje do dzialania.
+# Model embeddingowy (bge-m3) i model jezykowy sa uruchamiane przez Ollame,
+# ktora instaluje sie osobno - patrz INSTRUKCJA.md. Tutaj sa wylacznie
+# biblioteki Pythona.
+#
+# Swiadomie NIE ma tu: sentence-transformers, torch, langchain, llama-index.
+# Embeddingi liczy Ollama przez HTTP, wiec caly stos ML jest poza procesem
+# Pythona - to oszczedza kilka GB zaleznosci i pozwala trzymac modele w VRAM
+# niezaleznie od zycia serwera.
+
+# lokalna baza wektorowa (PersistentClient, przestrzen kosinusowa)
+chromadb>=0.5,<2
+
+# komunikacja z Ollama: /api/embeddings, /api/chat, /api/tags
+requests>=2.31
+
+# API i interfejs webowy
+fastapi>=0.110
+uvicorn>=0.29
+pydantic>=2.6

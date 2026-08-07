@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<title>Personal Knowledge Agent</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel-2: #1e222b; --line: #2a2f3a;
+    --text: #e6e8ec; --muted: #8b93a3; --accent: #6ea8fe; --accent2: #a78bfa;
+    --ok: #4ade80; --warn: #fbbf24; --err: #f87171;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.6 -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column; min-height: 100vh;
+  }
+  header {
+    padding: 16px 24px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+  }
+  h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  #stan { font-size: 12.5px; color: var(--muted); }
+  #stan .kropka { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--muted); margin-right:6px; vertical-align:middle; }
+  #stan.ok .kropka { background: var(--ok); }
+  #stan.zle .kropka { background: var(--err); }
+
+  main { flex: 1; max-width: 900px; width: 100%; margin: 0 auto; padding: 20px 24px 40px; }
+
+  /* --- przelacznik trybow --- */
+  .tryby { display: flex; gap: 6px; margin-bottom: 14px; background: var(--panel); padding: 5px; border-radius: 11px; border: 1px solid var(--line); }
+  .tryb {
+    flex: 1; padding: 9px 12px; border-radius: 8px; border: 0; cursor: pointer;
+    background: transparent; color: var(--muted); font: inherit; font-size: 13.5px;
+    text-align: center; transition: background .12s, color .12s;
+  }
+  .tryb:hover { color: var(--text); }
+  .tryb.wybrany { background: var(--accent); color: #0b1020; font-weight: 600; }
+  .tryb.wybrany[data-tryb="hybryda"] { background: var(--ok); }
+  .tryb.wybrany[data-tryb="rozmowa"] { background: var(--accent2); }
+  .tryb.wybrany[data-tryb="szukaj"] { background: var(--panel-2); color: var(--text); }
+
+  /* --- plakietka zrodla wiedzy (tryb hybrydowy) ---
+     Bez niej tryb hybrydowy bylby niebezpieczny: nie widac, czy zdanie
+     pochodzi z notatek, czy model je wymyslil z wiedzy ogolnej. */
+  .plakietka {
+    display: inline-block; font-size: 11px; font-weight: 600; letter-spacing: .04em;
+    text-transform: uppercase; padding: 3px 9px; border-radius: 999px; margin-bottom: 9px;
+  }
+  .plakietka.notatki { background: rgba(74,222,128,.14); color: var(--ok);   border: 1px solid rgba(74,222,128,.35); }
+  .plakietka.model   { background: rgba(251,191,36,.13); color: var(--warn); border: 1px solid rgba(251,191,36,.35); }
+
+  .opis-trybu { font-size: 12.5px; color: var(--muted); margin: 0 0 16px 4px; min-height: 19px; }
+  .opis-trybu b { color: var(--text); font-weight: 500; }
+
+  form { display: flex; gap: 10px; margin-bottom: 6px; }
+  input[type=text] {
+    flex: 1; padding: 13px 15px; font-size: 15px; font-family: inherit;
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--line); border-radius: 9px; outline: none;
+  }
+  input[type=text]:focus { border-color: var(--accent); }
+  button.wyslij {
+    padding: 13px 22px; font-size: 15px; font-family: inherit; font-weight: 500;
+    background: var(--accent); color: #0b1020; border: 0; border-radius: 9px; cursor: pointer;
+  }
+  button.wyslij:disabled { opacity: .5; cursor: default; }
+  body.rozmowa button.wyslij { background: var(--accent2); }
+
+  /* --- pasek narzedzi ---
+     Byl lista podkreslonych linkow 12 px. Za male, zeby trafic, i za slabo
+     odroznione od tekstu pomocniczego, zeby w ogole zauwazyc, ze to przyciski. */
+  .pasek {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 10px; margin-bottom: 20px; flex-wrap: wrap;
+  }
+  .narzedzia { display: flex; gap: 8px; flex-wrap: wrap; }
+  .narzedzia button {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 9px 15px; font: inherit; font-size: 13.5px; font-weight: 500;
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--line); border-radius: 9px; cursor: pointer;
+    transition: border-color .12s, background .12s;
+  }
+  .narzedzia button:hover { background: var(--panel-2); border-color: var(--muted); }
+  .narzedzia button.aktywny { border-color: var(--ok); color: var(--ok); }
+  .narzedzia button .ikona { font-size: 15px; line-height: 1; opacity: .85; }
+  .narzedzia button.cichy { color: var(--muted); }
+  .narzedzia button.cichy:hover { color: var(--text); }
+  #infoHistorii { font-size: 12.5px; color: var(--muted); }
+
+  /* dopytanie modelu pod odpowiedzia z notatek */
+  .dopytaj {
+    margin-top: 11px; padding: 8px 14px; font: inherit; font-size: 13px; font-weight: 500;
+    background: transparent; color: var(--warn); border: 1px solid rgba(251,191,36,.4);
+    border-radius: 8px; cursor: pointer;
+  }
+  .dopytaj:hover { background: rgba(251,191,36,.1); }
+  .dopytaj:disabled { opacity: .5; cursor: default; }
+  .odp-modelu { margin-top: 12px; padding-left: 13px; border-left: 2px solid var(--warn); }
+
+  .wpis { margin-bottom: 24px; }
+  .pytanie { font-weight: 600; margin-bottom: 10px; padding-left: 12px; border-left: 3px solid var(--accent); }
+  body.rozmowa .pytanie { border-left-color: var(--accent2); }
+  .odpowiedz {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 11px;
+    padding: 16px 18px; white-space: pre-wrap; word-wrap: break-word;
+  }
+  .odpowiedz.brak { color: var(--warn); }
+  .odpowiedz.blad { color: var(--err); }
+
+  .zrodla { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 7px; }
+  .zrodlo {
+    font-size: 12px; font-family: ui-monospace, Consolas, monospace;
+    background: var(--panel-2); border: 1px solid var(--line);
+    padding: 4px 9px; border-radius: 6px; color: var(--accent);
+  }
+  .meta { margin-top: 10px; font-size: 12px; color: var(--muted); font-family: ui-monospace, Consolas, monospace; }
+
+  details { margin-top: 11px; }
+  summary { cursor: pointer; font-size: 12.5px; color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; margin-top: 9px; font-size: 12.5px; }
+  th, td { text-align: left; padding: 6px 9px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; }
+  td.d { font-family: ui-monospace, Consolas, monospace; width: 74px; }
+  td.d.pass { color: var(--ok); }
+  td.d.fail { color: var(--muted); }
+  td.src { font-family: ui-monospace, Consolas, monospace; color: var(--accent); }
+  td.frag { color: var(--muted); }
+
+  /* --- panele: dopisywanie i historia --- */
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 11px;
+           padding: 14px 16px; margin-bottom: 18px; }
+  .panel h3 { margin: 0 0 4px; font-size: 13.5px; font-weight: 600; }
+  .panel p.pod { margin: 0 0 11px; font-size: 12.5px; color: var(--muted); }
+  .panel textarea {
+    width: 100%; min-height: 84px; resize: vertical; padding: 11px 13px;
+    font: inherit; font-size: 14px; background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 8px; outline: none;
+  }
+  .panel textarea:focus { border-color: var(--ok); }
+  .panel input.tytul {
+    width: 100%; padding: 9px 13px; margin-bottom: 8px; font: inherit; font-size: 13.5px;
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 8px; outline: none;
+  }
+  .rzad { display: flex; gap: 9px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+  button.maly {
+    padding: 8px 15px; font: inherit; font-size: 13px; font-weight: 500; cursor: pointer;
+    background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 8px;
+  }
+  button.maly:hover { border-color: var(--muted); }
+  button.maly.glowny { background: var(--ok); color: #08160d; border-color: var(--ok); font-weight: 600; }
+  button.maly:disabled { opacity: .5; cursor: default; }
+  .status { font-size: 12.5px; color: var(--muted); }
+  .status.ok { color: var(--ok); }
+  .status.zle { color: var(--err); }
+
+  .lista-rozmow { max-height: 320px; overflow-y: auto; margin-top: 4px; }
+  .rozmowa-poz {
+    display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+    border-radius: 7px; cursor: pointer; border: 1px solid transparent;
+  }
+  .rozmowa-poz:hover { background: var(--panel-2); border-color: var(--line); }
+  .rozmowa-poz .tyt { flex: 1; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rozmowa-poz .kiedy { font-size: 11.5px; color: var(--muted); font-family: ui-monospace, Consolas, monospace; }
+  .rozmowa-poz .usun { color: var(--muted); border: 0; background: none; cursor: pointer; font-size: 15px; padding: 0 4px; }
+  .rozmowa-poz .usun:hover { color: var(--err); }
+  .wczytana { font-size: 12.5px; color: var(--warn); margin-bottom: 12px; }
+
+  .puste { color: var(--muted); font-size: 14px; padding: 26px 0; }
+  .spinner { display:inline-block; width:12px; height:12px; border:2px solid var(--line); border-top-color:var(--accent); border-radius:50%; animation:spin .7s linear infinite; vertical-align:-1px; margin-right:7px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Personal Knowledge Agent</h1>
+  <span id="stan"><span class="kropka"></span>sprawdzam...</span>
+</header>
+
+<main>
+  <div class="tryby" id="tryby">
+    <button class="tryb wybrany" data-tryb="hybryda">Notatki + model</button>
+    <button class="tryb" data-tryb="notatki">Tylko notatki</button>
+    <button class="tryb" data-tryb="rozmowa">Rozmowa</button>
+    <button class="tryb" data-tryb="szukaj">Tylko wyszukiwanie</button>
+  </div>
+  <div class="opis-trybu" id="opisTrybu"></div>
+
+  <form id="form">
+    <input type="text" id="pytanie" placeholder="Zapytaj o cokolwiek z notatek..." autocomplete="off" autofocus>
+    <button type="submit" class="wyslij" id="wyslij">Zapytaj</button>
+  </form>
+
+  <div class="pasek">
+    <div class="narzedzia">
+      <button id="pokazDopisz" type="button"><span class="ikona">+</span>Dopisz do notatek</button>
+      <button id="pokazHistorie" type="button"><span class="ikona">&#9776;</span>Historia rozmów</button>
+      <button id="nowaRozmowa" type="button"><span class="ikona">&#9998;</span>Nowa rozmowa</button>
+      <button id="wyczysc" class="cichy" type="button">Wyczyść ekran</button>
+    </div>
+    <span id="infoHistorii"></span>
+  </div>
+
+  <!-- dopisywanie do vaultu -->
+  <div class="panel" id="panelDopisz" style="display:none">
+    <h3>Dopisz do notatek</h3>
+    <p class="pod">Trafia do <code>Notatki/inbox/surowe-RRRR-MM-DD.md</code> i jest od razu
+       indeksowane — agent zobaczy to w następnym pytaniu. Przejrzyj później i rozdziel
+       do właściwych notatek.</p>
+    <input type="text" class="tytul" id="dopiszTytul" placeholder="tytuł (opcjonalnie)" autocomplete="off">
+    <textarea id="dopiszTekst" placeholder="Co dopisać?"></textarea>
+    <div class="rzad">
+      <button class="maly glowny" id="dopiszZapisz" type="button">Zapisz i zaindeksuj</button>
+      <span class="status" id="dopiszStatus"></span>
+    </div>
+  </div>
+
+  <!-- historia rozmow -->
+  <div class="panel" id="panelHistoria" style="display:none">
+    <h3>Historia rozmów</h3>
+    <p class="pod">Przechowywana poza bazą wektorową — agent jej nie przeszukuje i nie cytuje.</p>
+    <div class="lista-rozmow" id="listaRozmow"></div>
+    <div class="rzad">
+      <button class="maly" id="zrzutTeraz" type="button">Zrzuć sesję do pliku</button>
+      <span class="status" id="zrzutStatus"></span>
+    </div>
+  </div>
+
+  <div class="wczytana" id="wczytana" style="display:none"></div>
+
+  <div id="wyniki">
+    <div class="puste" id="puste"></div>
+  </div>
+</main>
+
+<script>
+const form = document.getElementById('form');
+const input = document.getElementById('pytanie');
+const przycisk = document.getElementById('wyslij');
+const wyniki = document.getElementById('wyniki');
+const puste = document.getElementById('puste');
+const stan = document.getElementById('stan');
+const opisTrybu = document.getElementById('opisTrybu');
+const infoHistorii = document.getElementById('infoHistorii');
+
+let tryb = 'notatki';
+let historiaRozmowy = [];   // kontekst dla modelu, tylko w trybie "rozmowa"
+
+// Zapis rozmowy na dysk. To co innego niz historiaRozmowy: tamto jest pamiecia
+// modelu w obrebie jednego watku, to jest trwalym archiwum wszystkich trybow.
+let rozmowaId = null;
+let wpisy = [];
+
+const TRYBY = {
+  hybryda: {
+    placeholder: 'Zapytaj o cokolwiek...',
+    przycisk: 'Zapytaj',
+    opis: '<b>Najpierw notatki, potem wiedza modelu.</b> Każda odpowiedź ma plakietkę mówiącą, skąd pochodzi — zielona to Twoje notatki, żółta to model.',
+    puste: 'Tryb domyślny. Pytaj o wszystko — o siebie i o świat.<br><br>&bull; Dlaczego odrzucam oferty w Business Intelligence? <span style="color:var(--ok)">→ notatki</span><br>&bull; Jak w Pythonie odczytać plik z BOM-em? <span style="color:var(--warn)">→ model</span>'
+  },
+  notatki: {
+    placeholder: 'Zapytaj o cokolwiek z notatek...',
+    przycisk: 'Zapytaj',
+    opis: '<b>Wyłącznie Twoje notatki</b>, z podaniem źródła. Gdy nie znajdzie — mówi „nie wiem" zamiast zmyślać. Tryb do sprawdzania faktów o sobie.',
+    puste: 'Przykłady:<br><br>&bull; Dlaczego odrzucam oferty w Business Intelligence?<br>&bull; Jak wyeksportować dane z COOIS?<br>&bull; Co świadomie odłożyłem przy grafie wiedzy?'
+  },
+  rozmowa: {
+    placeholder: 'Napisz cokolwiek...',
+    przycisk: 'Wyślij',
+    opis: '<b>Zwykła rozmowa z modelem</b>, bez notatek. Pamięta kontekst rozmowy. Wszystko lokalnie — nic nie wychodzi poza tę maszynę.',
+    puste: 'Zwykły czat z lokalnym modelem. Pamięta poprzednie wiadomości w tej rozmowie.<br><br>Notatki są tu <b>niedostępne</b> — do pytań o nie przełącz się na tryb Notatki.'
+  },
+  szukaj: {
+    placeholder: 'Czego szukasz w notatkach?',
+    przycisk: 'Szukaj',
+    opis: '<b>Sam retrieval, bez modelu.</b> Pokazuje, które fragmenty pasują i jak blisko są — do diagnozy, gdy odpowiedzi zaczną się psuć.',
+    puste: 'Tryb diagnostyczny. Zwraca same fragmenty z dystansami, natychmiast, bez wywoływania modelu.'
+  }
+};
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function ustawTryb(nowy) {
+  tryb = nowy;
+  document.querySelectorAll('.tryb').forEach(b =>
+    b.classList.toggle('wybrany', b.dataset.tryb === nowy));
+  document.body.classList.toggle('rozmowa', nowy === 'rozmowa');
+  const t = TRYBY[nowy];
+  input.placeholder = t.placeholder;
+  przycisk.textContent = t.przycisk;
+  opisTrybu.innerHTML = t.opis;
+  puste.innerHTML = t.puste;
+  odswiezInfo();
+  input.focus();
+}
+
+function odswiezInfo() {
+  if (tryb === 'rozmowa' && historiaRozmowy.length) {
+    infoHistorii.textContent = 'w pamięci: ' + (historiaRozmowy.length / 2) + ' wymian';
+  } else {
+    infoHistorii.textContent = '';
+  }
+}
+
+document.getElementById('tryby').addEventListener('click', e => {
+  const b = e.target.closest('.tryb');
+  if (b) ustawTryb(b.dataset.tryb);
+});
+
+function czyscWidok() {
+  wyniki.innerHTML = '';
+  wyniki.appendChild(puste);
+  puste.style.display = '';
+  historiaRozmowy = [];
+  document.getElementById('wczytana').style.display = 'none';
+  odswiezInfo();
+}
+
+document.getElementById('wyczysc').addEventListener('click', () => {
+  czyscWidok();          // czysci tylko ekran - zapisana rozmowa zostaje na dysku
+  input.focus();
+});
+
+document.getElementById('nowaRozmowa').addEventListener('click', () => {
+  rozmowaId = null;
+  wpisy = [];
+  czyscWidok();
+  input.focus();
+});
+
+// ---------- panele ----------
+function przelacz(idPanelu, idPrzycisku, poOtwarciu) {
+  const p = document.getElementById(idPanelu);
+  const bylUkryty = p.style.display === 'none';
+  document.getElementById('panelDopisz').style.display = 'none';
+  document.getElementById('panelHistoria').style.display = 'none';
+  document.getElementById('pokazDopisz').classList.remove('aktywny');
+  document.getElementById('pokazHistorie').classList.remove('aktywny');
+  if (bylUkryty) {
+    p.style.display = '';
+    document.getElementById(idPrzycisku).classList.add('aktywny');
+    if (poOtwarciu) poOtwarciu();
+  }
+}
+
+document.getElementById('pokazDopisz').addEventListener('click', () =>
+  przelacz('panelDopisz', 'pokazDopisz', () => document.getElementById('dopiszTekst').focus()));
+document.getElementById('pokazHistorie').addEventListener('click', () =>
+  przelacz('panelHistoria', 'pokazHistorie', wczytajListeRozmow));
+
+// ---------- dopytanie modelu ----------
+// Automatyczne przejscie na wiedze modelu dziala tylko w trybie hybrydowym i tylko
+// wtedy, gdy agent sam uzna, ze notatek brak. Ten przycisk daje kontrole recznie:
+// pod KAZDA odpowiedzia z notatek mozna dopytac model o to samo.
+wyniki.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.dopytaj');
+  if (!btn) return;
+
+  const pytanie = btn.dataset.pytanie;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>pytam model...';
+  try {
+    const r = await fetch('/chat', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: [{ role: 'user', content: pytanie }] })
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    const blok = document.createElement('div');
+    blok.className = 'odp-modelu';
+    blok.innerHTML =
+      '<div class="plakietka model">wiedza modelu, nie notatki</div>' +
+      '<div class="odpowiedz">' + esc(d.answer) + '</div>' +
+      '<div class="meta">' + d.generation_s + ' s &middot; dopytane recznie</div>';
+    btn.replaceWith(blok);
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = 'Nie udało się: ' + err.message + ' — kliknij ponownie';
+  }
+});
+
+function przyciskDopytaj(pytanie) {
+  return '<button class="dopytaj" data-pytanie="' + esc(pytanie) +
+         '" type="button">Zapytaj model o to samo</button>';
+}
+
+// ---------- dopisywanie do notatek ----------
+const dopiszTekst = document.getElementById('dopiszTekst');
+const dopiszTytul = document.getElementById('dopiszTytul');
+const dopiszStatus = document.getElementById('dopiszStatus');
+const dopiszBtn = document.getElementById('dopiszZapisz');
+
+dopiszBtn.addEventListener('click', async () => {
+  const tekst = dopiszTekst.value.trim();
+  if (!tekst) { dopiszStatus.className = 'status zle'; dopiszStatus.textContent = 'pusto'; return; }
+
+  dopiszBtn.disabled = true;
+  dopiszStatus.className = 'status';
+  dopiszStatus.innerHTML = '<span class="spinner"></span>zapisuję i indeksuję...';
+  try {
+    const r = await fetch('/dopisz', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tekst: tekst, tytul: dopiszTytul.value.trim() || null })
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    dopiszTekst.value = '';
+    dopiszTytul.value = '';
+    dopiszStatus.className = 'status ok';
+    dopiszStatus.textContent = 'zapisane' +
+      (d.chunks != null && d.chunks >= 0 ? ' — w bazie ' + d.chunks + ' fragmentów' : '');
+    sprawdzStan();
+  } catch (err) {
+    dopiszStatus.className = 'status zle';
+    dopiszStatus.textContent = 'błąd: ' + err.message;
+  } finally {
+    dopiszBtn.disabled = false;
+  }
+});
+
+// Ctrl+Enter zapisuje - przy dluzszym wpisie siegarnie po mysz jest uciazliwe
+dopiszTekst.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) dopiszBtn.click();
+});
+
+// ---------- historia rozmow ----------
+async function zapiszRozmowe() {
+  if (!wpisy.length) return;
+  try {
+    const r = await fetch('/rozmowy', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: rozmowaId, tryb: tryb, wpisy: wpisy })
+    });
+    if (r.ok) rozmowaId = (await r.json()).id;
+  } catch (e) { /* zapis historii nie moze przeszkadzac w zadawaniu pytan */ }
+}
+
+async function wczytajListeRozmow() {
+  const lista = document.getElementById('listaRozmow');
+  lista.innerHTML = '<div class="status">wczytuję...</div>';
+  try {
+    const d = await (await fetch('/rozmowy')).json();
+    if (!d.rozmowy.length) { lista.innerHTML = '<div class="status">jeszcze nic tu nie ma</div>'; return; }
+    lista.innerHTML = d.rozmowy.map(r =>
+      '<div class="rozmowa-poz" data-id="' + esc(r.id) + '">' +
+        '<span class="tyt">' + esc(r.tytul) + '</span>' +
+        '<span class="kiedy">' + esc((r.zmieniona || '').replace('T', ' ').slice(0, 16)) +
+        ' &middot; ' + esc(r.wpisow) + '</span>' +
+        '<button class="usun" title="usuń" data-usun="' + esc(r.id) + '">&times;</button>' +
+      '</div>').join('');
+  } catch (err) {
+    lista.innerHTML = '<div class="status zle">błąd: ' + esc(err.message) + '</div>';
+  }
+}
+
+document.getElementById('listaRozmow').addEventListener('click', async (e) => {
+  const doUsuniecia = e.target.dataset.usun;
+  if (doUsuniecia) {
+    e.stopPropagation();
+    await fetch('/rozmowy/' + encodeURIComponent(doUsuniecia), { method: 'DELETE' });
+    if (rozmowaId === doUsuniecia) { rozmowaId = null; wpisy = []; }
+    wczytajListeRozmow();
+    return;
+  }
+  const poz = e.target.closest('.rozmowa-poz');
+  if (poz) otworzRozmowe(poz.dataset.id);
+});
+
+async function otworzRozmowe(id) {
+  try {
+    const d = await (await fetch('/rozmowy/' + encodeURIComponent(id))).json();
+    czyscWidok();
+    rozmowaId = d.id;
+    wpisy = d.wpisy || [];
+
+    // Odtwarzamy tez pamiec modelu, zeby dalo sie kontynuowac watek, a nie
+    // tylko go ogladac. Bez tego model nie wiedzialby, o czym byla mowa.
+    historiaRozmowy = [];
+    for (const w of wpisy) {
+      historiaRozmowy.push({ role: 'user', content: w.pytanie });
+      historiaRozmowy.push({ role: 'assistant', content: w.odpowiedz });
+    }
+
+    for (const w of wpisy) {
+      dodaj(w.pytanie,
+        (w.zrodlo ? '<div class="plakietka ' + (w.zrodlo === 'notatki' ? 'notatki' : 'model') + '">' +
+          (w.zrodlo === 'notatki' ? 'z Twoich notatek' : 'wiedza modelu, nie notatki') + '</div>' : '') +
+        '<div class="odpowiedz">' + esc(w.odpowiedz) + '</div>' +
+        (w.zrodla && w.zrodla.length
+          ? '<div class="zrodla">' + w.zrodla.map(s => '<span class="zrodlo">' + esc(s) + '</span>').join('') + '</div>'
+          : ''));
+    }
+    const info = document.getElementById('wczytana');
+    info.style.display = '';
+    info.textContent = 'Wczytana rozmowa z ' + (d.zmieniona || '').replace('T', ' ').slice(0, 16) +
+                       '. Kolejne pytanie dopisze się do niej — kliknij „nowa", żeby zacząć osobną.';
+    odswiezInfo();
+    input.focus();
+  } catch (err) {
+    alert('Nie udało się wczytać rozmowy: ' + err.message);
+  }
+}
+
+// ---------- zrzut sesji ----------
+document.getElementById('zrzutTeraz').addEventListener('click', async () => {
+  const s = document.getElementById('zrzutStatus');
+  s.className = 'status'; s.textContent = 'zapisuję...';
+  try {
+    const d = await (await fetch('/zrzut', { method: 'POST' })).json();
+    s.className = d.ok ? 'status ok' : 'status zle';
+    s.textContent = d.ok ? 'zapisane: ' + d.plik : (d.powod || 'nie udało się');
+  } catch (err) {
+    s.className = 'status zle'; s.textContent = 'błąd: ' + err.message;
+  }
+});
+
+async function sprawdzStan() {
+  try {
+    const d = await (await fetch('/health')).json();
+    stan.className = 'ok';
+    stan.innerHTML = '<span class="kropka"></span>' +
+      esc(d.chunks) + ' fragmentów &middot; próg ' + esc(d.max_distance ?? '—') +
+      ' &middot; k=' + esc(d.top_k ?? '—') +
+      ' &middot; ' + (d.use_bm25 ? 'hybryda wektory+BM25' : 'same wektory') +
+      ' &middot; ' + esc((d.models || [])[1] || '');
+  } catch (e) {
+    stan.className = 'zle';
+    stan.innerHTML = '<span class="kropka"></span>API nie odpowiada';
+  }
+}
+
+function tabelaFragmentow(hits, prog) {
+  if (!hits || !hits.length) return '';
+  let t = '<table><tr><th>dystans</th><th>źródło</th><th>sekcja</th></tr>';
+  for (const h of hits) {
+    const ok = prog == null || h.distance <= prog;
+    t += '<tr><td class="d ' + (ok ? 'pass' : 'fail') + '">' + h.distance.toFixed(3) + '</td>' +
+         '<td class="src">' + esc(h.source) + '</td>' +
+         '<td class="frag">' + esc(h.heading || '—') + '</td></tr>';
+  }
+  return t + '</table>';
+}
+
+function dodaj(pytanie, html) {
+  puste.style.display = 'none';
+  const div = document.createElement('div');
+  div.className = 'wpis';
+  div.innerHTML = '<div class="pytanie">' + esc(pytanie) + '</div>' + html;
+  wyniki.prepend(div);
+  return div;
+}
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const q = input.value.trim();
+  if (!q) return;
+
+  const trybTegoPytania = tryb;
+  input.value = '';
+  przycisk.disabled = true;
+  const wpis = dodaj(q, '<div class="odpowiedz"><span class="spinner"></span>' +
+    (trybTegoPytania === 'szukaj' ? 'szukam...' : 'myślę...') + '</div>');
+  const t0 = performance.now();
+
+  try {
+    let d, html = '';
+
+    if (trybTegoPytania === 'rozmowa') {
+      historiaRozmowy.push({ role: 'user', content: q });
+      const r = await fetch('/chat', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: historiaRozmowy })
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      d = await r.json();
+      historiaRozmowy.push({ role: 'assistant', content: d.answer });
+      odswiezInfo();
+      html = '<div class="odpowiedz">' + esc(d.answer) + '</div>' +
+             '<div class="meta">' + d.generation_s + ' s &middot; tryb rozmowy, bez notatek</div>';
+
+    } else if (trybTegoPytania === 'szukaj') {
+      const r = await fetch('/search', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: q })
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      d = await r.json();
+      const n = (d.hits || []).length;
+      html = '<div class="odpowiedz' + (n ? '' : ' brak') + '">' +
+        (n ? n + ' fragmentów przeszło próg ' + d.max_distance
+           : 'Żaden fragment nie przeszedł progu ' + d.max_distance) + '</div>';
+      const wszystkie = (d.hits || []).concat(d.rejected || []).sort((a,b) => a.distance - b.distance);
+      html += tabelaFragmentow(wszystkie, d.max_distance);
+      html += '<div class="meta">' + ((performance.now()-t0)/1000).toFixed(1) +
+              ' s &middot; sam retrieval, model niewywołany</div>';
+
+    } else if (trybTegoPytania === 'hybryda') {
+      const r = await fetch('/hybrid', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: q })
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      d = await r.json();
+      const zNotatek = d.zrodlo_wiedzy === 'notatki';
+
+      // Plakietka jest tu najwazniejszym elementem, nie ozdoba - to jedyne,
+      // co odroznia fakt z notatek od tego, co model uznal za prawdopodobne.
+      html = '<div class="plakietka ' + (zNotatek ? 'notatki' : 'model') + '">' +
+             (zNotatek ? 'z Twoich notatek' : 'wiedza modelu, nie notatki') + '</div>' +
+             '<div class="odpowiedz">' + esc(d.answer) + '</div>';
+
+      if (zNotatek && d.sources && d.sources.length) {
+        html += '<div class="zrodla">' +
+          d.sources.map(s => '<span class="zrodlo">' + esc(s) + '</span>').join('') + '</div>';
+      }
+      html += '<div class="meta">retrieval ' + d.retrieval_s + ' s &middot; generacja ' +
+              d.generation_s + ' s' +
+              (d.hits && d.hits[0] ? ' &middot; najlepszy dystans ' + d.hits[0].distance.toFixed(3) : '') +
+              '</div>';
+      if (zNotatek) html += przyciskDopytaj(q);
+      if (!zNotatek && d.hits && d.hits.length) {
+        html += '<details><summary>co znalazl w notatkach (i odrzucil)</summary>' +
+                tabelaFragmentow(d.hits, null) + '</details>';
+      }
+
+    } else {
+      const r = await fetch('/ask', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: q })
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      d = await r.json();
+      const brak = !d.in_scope;
+      html = '<div class="odpowiedz' + (brak ? ' brak' : '') + '">' + esc(d.answer) + '</div>';
+      if (d.sources && d.sources.length) {
+        html += '<div class="zrodla">' +
+          d.sources.map(s => '<span class="zrodlo">' + esc(s) + '</span>').join('') + '</div>';
+      }
+      html += '<div class="meta">retrieval ' + d.retrieval_s + ' s &middot; generacja ' +
+              d.generation_s + ' s' +
+              (d.hits && d.hits[0] ? ' &middot; najlepszy dystans ' + d.hits[0].distance.toFixed(3) : '') +
+              '</div>';
+      html += przyciskDopytaj(q);
+      if (d.hits && d.hits.length) {
+        html += '<details' + (brak ? ' open' : '') + '><summary>' +
+                (brak ? 'najbliższe fragmenty (dlaczego odmówił)' : 'użyte fragmenty') +
+                '</summary>' + tabelaFragmentow(d.hits, null) + '</details>';
+      }
+    }
+
+    wpis.innerHTML = '<div class="pytanie">' + esc(q) + '</div>' + html;
+
+    // Archiwum zapisujemy dopiero TU, po udanej odpowiedzi. Gdyby zapis szedl
+    // razem z pytaniem, historia zapelnilaby sie watkami urwanymi na bledzie.
+    // Tryb diagnostyczny pomijamy - nie ma tam odpowiedzi, tylko tabela dystansow.
+    if (trybTegoPytania !== 'szukaj') { wpisy.push({
+      pytanie: q,
+      odpowiedz: d.answer || '',
+      tryb: trybTegoPytania,
+      zrodlo: d.zrodlo_wiedzy || '',
+      zrodla: d.sources || [],
+      czas: new Date().toISOString().slice(0, 19)
+    });
+    zapiszRozmowe(); }
+
+  } catch (err) {
+    if (trybTegoPytania === 'rozmowa' && historiaRozmowy.length &&
+        historiaRozmowy[historiaRozmowy.length - 1].role === 'user') {
+      historiaRozmowy.pop();   // nie zostawiaj wiszacego pytania w historii
+      odswiezInfo();
+    }
+    wpis.innerHTML = '<div class="pytanie">' + esc(q) + '</div>' +
+      '<div class="odpowiedz blad">Błąd: ' + esc(err.message) +
+      '<br><br>Sprawdź, czy serwer działa. Po zmianach w core.py trzeba go zrestartować.</div>';
+  } finally {
+    przycisk.disabled = false;
+    input.focus();
+  }
+});
+
+ustawTryb('hybryda');
+sprawdzStan();
+</script>
+</body>
+</html>

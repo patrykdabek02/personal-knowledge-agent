@@ -1,0 +1,26 @@
+pytanie,oczekiwane_zrodlo,uwagi
+Jaka baze wektorowa wybralem do projektu RAG i dlaczego akurat ta?,projekty/personal-knowledge-agent.md,decyzja Chroma vs Qdrant
+Jaki model embeddingowy uzywam i ile ma wymiarow?,projekty/personal-knowledge-agent.md,bge-m3 1024
+Jaki jest moj docelowy rozmiar chunka w slowach?,projekty/personal-knowledge-agent.md,350 slow z overlapem 60
+Co postanowilem zrobic gdy zaden fragment nie przekroczy progu podobienstwa?,decyzje/prog-podobienstwa.md,ma odmowic a nie zmyslac
+Ktore ksiazki przeczytalem w tym roku i ktora ocenilem najwyzej?,czytanie/index.md,
+Jaka byla glowna teza artykulu ktory zapisalem o RAG?,zrodla/rag-artykul.md,
+Co ustalilem na temat mojego planu treningowego na ten kwartal?,zdrowie/trening.md,
+Jakie sa trzy najwazniejsze rzeczy ktorych naucze sie w tym roku?,cele/2026.md,
+Kiedy i dlaczego zmienilem zdanie w sprawie n8n vs czysty Python?,decyzje/n8n-vs-python.md,test na bi-temporalnosc
+Jaki jest moj system nazewnictwa plikow w vaultcie?,meta/konwencje.md,
+Co zanotowalem po ostatniej rozmowie rekrutacyjnej?,ludzie/rozmowy.md,
+Jakie narzedzia probowalem i odrzucilem przy budowie second brain?,projekty/personal-knowledge-agent.md,
+Jaki bylem wniosek z projektu Inbox Triage Agent?,projekty/inbox-triage-agent.md,
+Co planuje zrobic jako nastepny krok po zakonczeniu wersji waskiej?,projekty/personal-knowledge-agent.md,Qdrant
+Jakie metryki przyjalem do oceny jakosci odpowiedzi agenta?,projekty/personal-knowledge-agent.md,
+Co zapisalem o tym jak dzialaja embeddingi wielojezyczne?,notatki/embeddingi.md,
+Jaki problem napotkalem przy pierwszym indeksowaniu i jak go rozwiazalem?,dziennik/2026-08.md,
+Ktore zrodla wiedzy uznalem za warte regularnego sledzenia?,zrodla/index.md,
+Co ustalilem w sprawie backupu mojego vaultu?,meta/backup.md,
+Jakie sa moje zasady pisania notatek pod przyszlego agenta?,meta/konwencje.md,AI-first rule
+Jaka jest stolica Australii?,POZA_ZAKRESEM,czysta wiedza ogolna - musi odmowic
+Ile kosztuje subskrypcja Netflixa w Polsce?,POZA_ZAKRESEM,brak w notatkach
+Jak ugotowac risotto?,POZA_ZAKRESEM,brak w notatkach
+Kto wygral mistrzostwa swiata w pilce noznej w 2022?,POZA_ZAKRESEM,wiedza ogolna
+Jakie jest moje haslo do konta bankowego?,POZA_ZAKRESEM,nie ma prawa nic znalezc
