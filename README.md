@@ -4,6 +4,17 @@ Lokalny agent RAG odpowiadający na pytania na podstawie własnych notatek, z cy
 
 **Wyniki na 38 pytaniach testowych:** merytorycznie poprawna odpowiedź w 88% przypadków, poprawne źródło na 1. miejscu w 88%, odmowa na pytania spoza bazy wiedzy w 100%. **Zero konfabulacji** — w 32 odpowiedziach model ani razu nie wymyślił faktu ani nie zacytował nieistniejącego źródła. Mediana czasu odpowiedzi 5,9 s na RTX 4060 Laptop (8 GB VRAM).
 
+> **Stan dokumentacji.** Liczby w tym README pochodzą z pomiaru z 2026-08-04 (14 notatek,
+> 58 fragmentów, próg 0,52). Od tego czasu doszły: **wyszukiwanie hybrydowe BM25 + wektory
+> łączone metodą RRF**, tryb hybrydowy „notatki, a gdy ich brak — wiedza modelu, jawnie
+> oznaczona", interfejs webowy z czterema trybami, historia rozmów i dopisywanie notatek
+> z poziomu przeglądarki. Próg podniesiono do 0,65, a baza urosła do 26 notatek i 124
+> fragmentów.
+>
+> Świadomie **nie aktualizuję tu tabel z wynikami** — ewaluacja nie została powtórzona po
+> włączeniu BM25, a przepisanie liczb bez ponownego pomiaru byłoby zgadywaniem. Tabele
+> poniżej opisują konfigurację, dla której faktycznie je zmierzono.
+
 ---
 
 ## Problem
@@ -254,8 +265,12 @@ Workflow n8n: import `n8n_workflow.json`, uruchom `uvicorn search_api:app --host
 
 **3. Reranker** (`bge-reranker-v2-m3`) — pobrać top-20 z Chromy, przesortować modelem cross-encoder, wziąć top-4. Największy spodziewany skok jakości, ale też największy koszt: dodatkowy model w VRAM, którego przy 8 GB brakuje.
 
-**5. Hybrid search** BM25 + wektory — ratuje zapytania o rzadkie nazwy własne, gdzie same embeddingi wypadają słabo.
+**4. ~~Hybrid search BM25 + wektory~~ — ZROBIONE.** Ratuje zapytania o rzadkie nazwy własne, gdzie same embeddingi wypadają słabo: numer błędu SAP, kod węzła, nazwisko. Implementacja własna (BM25 Okapi, k1=1,5, b=0,75), wyniki łączone metodą **RRF** — sumowanie odwrotności pozycji w obu rankingach, dzięki czemu nie trzeba skalować niewspółmiernych punktacji.
 
-**6. Qdrant** — dopiero powyżej ~50 tys. fragmentów albo gdy pojawi się potrzeba poważnego filtrowania po metadanych. Chroma jest świadomie wybrana jako prostsza na tym etapie.
+Wymagało to lekkiego stemmera dla polskiego. Bez niego BM25 jest tu prawie bezużyteczny: „baza wektorowa" nie trafia w „bazy wektorowej", a „Katowice" w „Katowicach". Obcinanie końcówek musi być **dwuwarstwowe**, bo polski skleja sufiks słowotwórczy z fleksyjnym (`wektor + ow + ej`) — jedno przejście dawało niezgodne rdzenie dla tego samego słowa. Tokeny zawierające cyfry są z tego wyłączone, żeby nie uszkodzić dokładnie tych ciągów, dla których BM25 został dodany.
 
-**7. Lista akceptowalnych źródeł** w zestawie testowym zamiast jednego oczekiwanego pliku — usuwa znane ograniczenie metryki.
+**Do zmierzenia:** wpływ na dokładność. Spodziewany zysk dotyczy pytań o rzadkie tokeny, ale nie został jeszcze potwierdzony pełną ewaluacją.
+
+**5. Qdrant** — dopiero powyżej ~50 tys. fragmentów albo gdy pojawi się potrzeba poważnego filtrowania po metadanych. Chroma jest świadomie wybrana jako prostsza na tym etapie.
+
+**6. Lista akceptowalnych źródeł** w zestawie testowym zamiast jednego oczekiwanego pliku — usuwa znane ograniczenie metryki.
