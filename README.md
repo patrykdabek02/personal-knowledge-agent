@@ -2,10 +2,37 @@
 
 Lokalny agent RAG odpowiadający na pytania na podstawie własnych notatek, z cytowaniem pliku źródłowego. **Cały pipeline działa offline** — embeddingi, baza wektorowa i generowanie odpowiedzi. Żaden fragment notatek nie opuszcza maszyny.
 
-**Wyniki na 38 pytaniach testowych:** merytorycznie poprawna odpowiedź w 88% przypadków, poprawne źródło na 1. miejscu w 88%, odmowa na pytania spoza bazy wiedzy w 100%. **Zero konfabulacji** — w 32 odpowiedziach model ani razu nie wymyślił faktu ani nie zacytował nieistniejącego źródła. Mediana czasu odpowiedzi 5,9 s na RTX 4060 Laptop (8 GB VRAM).
+**Wyniki na 74 pytaniach testowych** (2026-08-09, 28 notatek, 132 fragmenty, próg 0,56): poprawne źródło na 1. miejscu w 77%, w top-6 w 98%, odmowa na pytania spoza bazy wiedzy w 86%, fałszywe odmowy 2%. Mediana czasu odpowiedzi 7,0 s na RTX 4060 Laptop (8 GB VRAM).
 
-> **Stan dokumentacji.** Liczby w tym README pochodzą z pomiaru z 2026-08-04 (14 notatek,
-> 58 fragmentów, próg 0,52). Od tego czasu doszło sporo:
+> **Jak czytać te liczby.** Nie są porównywalne z poprzednim pomiarem i to jest celowe.
+> Zestaw testowy urósł z 38 do 74 pytań, ale ważniejsza jest zmiana jego składu:
+> pytania spoza zakresu to już nie tylko „jak ugotować risotto", lecz bełkot,
+> pojedyncze słowa i — najtrudniejsze — pytania zbudowane wyłącznie ze słów obecnych
+> w notatkach, o fakt, którego tam nie ma („Ile zapłaciłem za licencję Chroma?").
+> Stary zestaw dawał 100% odmów, bo nie zawierał niczego trudnego. Na nowym ta sama
+> konfiguracja dawała **9%**. Spadek ze 100% na 86% oznacza uczciwszy pomiar,
+> nie regresję.
+>
+> **Co dała bramka zakresu** (jeden dzień, ten sam zestaw 74 pytań):
+>
+> | | przed | po |
+> |---|---|---|
+> | odmowy poza zakresem | 2/22 (9%) | 19/22 (86%) |
+> | fałszywe odmowy | 2/52 | 1/52 (2%) |
+> | przejęcie tożsamości użytkownika | niewykrywane | wykrywane, 0 wycieków |
+> | trafność źródła (top-1 / top-6) | 77% / 98% | bez zmian |
+>
+> Retrieval nie został ruszony — cały zysk pochodzi z decyzji o zakresie i z kontroli
+> przeniesionych do kodu.
+>
+> **Czego te liczby NIE mówią:** nic o merytorycznej poprawności treści. Kolumna
+> `ocena_reczna` wymaga przejrzenia odpowiedzi ręcznie i nie została jeszcze wypełniona.
+> Znane braki: pytania jednosłowne i pytania z fałszywą przesłanką nadal bywają
+> odpowiadane zamiast odrzucone; jedna notatka nie wchodzi do top-6 mimo trafnej treści.
+
+> **Stan dokumentacji.** Tabele w dalszej części pochodzą z pomiaru z 2026-08-04
+> (14 notatek, 58 fragmentów, próg 0,52) i opisują konfigurację, dla której je
+> faktycznie zmierzono. Od tego czasu doszło sporo:
 >
 > - **wyszukiwanie hybrydowe** BM25 + wektory łączone metodą RRF, z lekkim stemmerem
 >   dla polskiego (bez niego „baza wektorowa" nie trafia w „bazy wektorowej")
@@ -16,12 +43,15 @@ Lokalny agent RAG odpowiadający na pytania na podstawie własnych notatek, z cy
 > - **`przetworz_inbox.py`** — rozbija surowe zapiski na pojedyncze fakty
 >   i proponuje, do której notatki i sekcji trafią
 > - **zbieranie wpadek** — zła odpowiedź jednym kliknięciem trafia do zestawu testowego
+> - **bramka zakresu** — sam próg dystansu okazał się niewystarczający, bo bge-m3
+>   jest anizotropowy i dwa niepowiązane teksty leżą w okolicy 0,60, nie 1,0.
+>   Doszedł wymóg, by najlepsze trafienie **odstawało** od mediany pozostałych,
+>   z wyjątkiem dla rzadkich i długich słów (nazwy własne, kody błędów)
+> - **`graf.py`** — graf podobieństwa fragmentów, notatek albo tagów; wykrywa
+>   duplikaty i sieroty, czyli notatki, których retrieval nie ma jak zaczepić
+> - **`wizualizacja.py`** — rzut PCA prawdziwych wektorów z bazy
 >
-> Próg podniesiono do 0,65, baza urosła do 26 notatek i ~132 fragmentów.
->
-> Świadomie **nie aktualizuję tu tabel z wynikami** — ewaluacja nie została powtórzona po
-> tych zmianach, a przepisanie liczb bez ponownego pomiaru byłoby zgadywaniem. Tabele
-> poniżej opisują konfigurację, dla której faktycznie je zmierzono.
+> Próg wynosi 0,56, baza urosła do 28 notatek i 132 fragmentów.
 >
 > **Wniosek przekrojowy z tych zmian:** wszystko, co miało być gwarancją, musiało
 > ostatecznie trafić do kodu, nie do promptu. Cyrylica, pierwsza osoba, status sekcji

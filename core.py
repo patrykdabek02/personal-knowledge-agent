@@ -51,10 +51,23 @@ COLLECTION_NAME = os.environ.get("COLLECTION_NAME", "knowledge_base")
 #       przeszly przez prog, a model mimo to odmowil. Prog nie musi juz byc jedyna
 #       gwarancja, wiec moze pelnic role zgrubnego filtra.
 #
+# 2026-08-09: obnizone do 0.55. Zestaw urosl do 74 pytan (52 w zakresie + 22 spoza),
+#   a nowe pytania spoza zakresu sa pierwszymi TRUDNYMI: belkot, pojedyncze slowa
+#   i - najwazniejsze - pytania zbudowane ze slow obecnych w notatkach o fakty,
+#   ktorych tam nie ma ("Ile zaplacilem za licencje Chroma?").
+#   Zmierzone przebiegiem na zywo (dokladnosc laczna, w zakresie / odmowy):
+#     0.65 bez marginesu    73%   52/52   2/22   <- stan z 4 sierpnia
+#     0.66 + margines 0.02  81%   52/52   -
+#     0.56 bez marginesu    84%   52/52  10/22
+#     0.56 + margines 0.02  89%   52/52  14/22   <- ustawione
+#   Obnizenie progu NIE kosztowalo ani jednego pytania w zakresie, ale zapas jest
+#   minimalny: najtrudniejsze pytanie w zakresie ma dystans 0.549, czyli 0.011 pod
+#   progiem. Pierwsze nowe pytanie o rozproszonej semantyce moze sie o to obic.
+#
 # Wartosc jest wazna DLA TEGO modelu i TEJ bazy. Po istotnym wzroscie liczby notatek
 # przelicz ponownie, ale najpierw DOPISZ do questions.csv pytania konwersacyjne -
 # inaczej kalibracja znowu zoptymalizuje sie pod jeden typ pytan.
-MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.65"))
+MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.56"))
 
 # Liczba fragmentow pobieranych z bazy.
 #
@@ -444,10 +457,13 @@ def search(
     for doc, meta, dist in zip(docs, metas, dists):
         all_hits.append(Hit(text=doc, distance=float(dist), metadata=dict(meta or {})))
 
+    lex = False
     if USE_BM25:
         all_hits = polacz_rrf(all_hits, bm25_hits(query, k=max(k * 3, 20)), k=k)
+        # UWAGA: nie "czy BM25 cokolwiek zwrocil" - patrz trafienie_leksykalne()
+        lex = trafienie_leksykalne(query)
 
-    return select_context(all_hits, max_distance), all_hits
+    return select_context(all_hits, max_distance, lex_trafil=lex), all_hits
 
 
 def bm25_hits(query: str, k: int = 20) -> list[Hit]:
@@ -508,17 +524,106 @@ def polacz_rrf(wektorowe: list[Hit], leksykalne: list[Hit], k: int) -> list[Hit]
     return [obiekty[kl] for kl in najlepsze]
 
 
-def select_context(all_hits: list[Hit], max_distance: float | None) -> list[Hit]:
+# Minimalny odstep najlepszego trafienia od mediany pozostalych.
+#
+# Powod: bge-m3 jest anizotropowy - jego wektory nie rozkladaja sie rownomiernie
+# po sferze, wiec dwa NIEPOWIAZANE teksty siedza w okolicy 0.60, a nie 1.0.
+# Prog 0.65 jest przez to blizej "cokolwiek" niz "cos pasuje".
+#
+# Przypadek, ktory to ujawnil (2026-08-09): zapytanie bez tresci ("chuj kurwa?")
+# dostalo zielona plakietke "Z TWOICH NOTATEK" i wyklad o job_tracker.html.
+# Dystanse szesciu fragmentow: 0.596 0.607 0.609 0.610 0.616 0.628.
+# Najlepszy przeszedl prog, ale ROZRZUT wynosil 0.032 - wszystkie fragmenty byly
+# jednakowo (nie)podobne. To jest podpis szumu: przy prawdziwym trafieniu pierwszy
+# wynik ODSTAJE od reszty. Dla porownania sensowne pytanie z tej samej sesji
+# ("jakiej magisterki szukam") dalo 0.432 przy medianie ~0.52, czyli odstep 0.09.
+MARGINES_MIN = float(os.environ.get("MARGINES_MIN", "0.02"))
+
+# Prog na "trafienie leksykalne" zwalniajace z wymogu marginesu.
+#
+# Pierwsza wersja (rano 9 sierpnia) uznawala za trafienie KAZDY niezerowy wynik
+# BM25. Kalibracja pokazala, ze to bylo bezuzyteczne: BM25 dawal punkty 71 z 74
+# pytan, w tym "Jak ugotowac risotto?" i "Jaka jest stolica Australii?" - bo
+# funkcja idf() nigdy nie zwraca zera, wiec wystarczylo jedno pospolite slowo
+# ("jest", "ile", "moje"), zeby wyjatek sie otworzyl i bramka przestala dzialac.
+# Bramka zadzialala na "chuj kurwa?" wylacznie dlatego, ze tam nie bylo ZADNEGO
+# znanego slowa - czyli przez przypadek, nie przez projekt.
+#
+# Teraz wyjatek wymaga slowa RZADKIEGO (w co najwyzej MAX_DF_LEKS fragmentach)
+# i DLUGIEGO (od MIN_DL_LEKS znakow). Taki ksztalt ma nazwa wlasna, numer bledu
+# albo nazwa narzedzia - czyli dokladnie to, po co BM25 zostal dodany: "COOIS",
+# "Qdrant", "F00003". Pospolite "jest" i "ile" juz sie nie lapia.
+#
+# Efekt na zestawie 74 pytan przy progu 0.56 i marginesie 0.02:
+#   wyjatek luzny (dowolny BM25)  85%  - otwieral sie na 71 z 74 pytan
+#   wyjatek scisly (ten)          89%  - otwiera sie na 44 z 74
+#   Wyjatek zarabia na siebie na pytaniach z waskim marginesem: "Jak sprawdzam czy
+#   dana oferta pasuje do mojego kierunku" ma margines 0.002 i przechodzi WYLACZNIE
+#   dzieki trafieniu leksykalnemu. Bez wyjatku bramka zjadlaby takie pytania.
+MAX_DF_LEKS = 3
+MIN_DL_LEKS = 5
+
+
+def trafienie_leksykalne(zapytanie: str) -> bool:
+    """Czy zapytanie zawiera rzadkie, dlugie slowo obecne w bazie.
+
+    To NIE jest to samo co "BM25 cos zwrocil" - patrz komentarz wyzej.
+    """
+    try:
+        idx = _bm25_index()
+    except Exception:  # noqa: BLE001 - brak indeksu nie moze wywrocic zapytania
+        return False
+    df = idx["bm25"].df
+    return any(
+        0 < df.get(t, 0) <= MAX_DF_LEKS and len(t) >= MIN_DL_LEKS
+        for t in set(tokenizuj(zapytanie))
+    )
+
+
+def margines(all_hits: list[Hit]) -> float | None:
+    """Ile najlepsze trafienie odstaje od mediany reszty. None = nie da sie policzyc.
+
+    Liczone WYLACZNIE na dystansach wektorowych. Fragmenty znane tylko z BM25
+    maja distance=999 i musza wypasc, inaczej zawyzalyby mediane do bezsensu.
+    """
+    realne = sorted(h.distance for h in all_hits if h.distance < 900)
+    if len(realne) < 3:
+        return None
+    reszta = realne[1:]
+    mediana = reszta[len(reszta) // 2]
+    return mediana - realne[0]
+
+
+def select_context(
+    all_hits: list[Hit],
+    max_distance: float | None,
+    lex_trafil: bool = False,
+) -> list[Hit]:
     """Decyduje, ktore fragmenty trafia do promptu.
 
     GATE_ON_BEST=True : najlepsze trafienie rozstrzyga o zakresie; jesli przejdzie,
                         model dostaje komplet k fragmentow.
     GATE_ON_BEST=False: kazdy fragment filtrowany osobno.
+
+    Sam prog to za malo - patrz komentarz przy MARGINES_MIN. Bramka przepuszcza
+    dopiero, gdy najlepszy dystans jest pod progiem ORAZ zachodzi jedno z dwoch:
+      - najlepsze trafienie odstaje od mediany o MARGINES_MIN (ranking cos wyroznil), albo
+      - BM25 znalazl doslowne trafienie leksykalne (zgodnosc slow, nie sama geometria).
+    Drugi warunek jest wazny: przy pytaniu o wlasna nazwe wlasna lub numer bledu
+    wektory bywaja plaskie, a BM25 trafia bezblednie. Bez tego wyjatku bramka
+    odcinalaby dokladnie te pytania, dla ktorych dodalismy BM25.
     """
     if not all_hits or max_distance is None:
         return all_hits
+    if all_hits[0].distance > max_distance:
+        return []
+
+    m = margines(all_hits)
+    if m is not None and m < MARGINES_MIN and not lex_trafil:
+        return []   # ranking plaski i zero zgodnosci slownej = szum, nie odpowiedz
+
     if GATE_ON_BEST:
-        return all_hits if all_hits[0].distance <= max_distance else []
+        return all_hits
     return [h for h in all_hits if h.distance <= max_distance]
 
 
@@ -536,14 +641,26 @@ Zasady, ktorych nie wolno zlamac:
    na kilku fragmentach, piszesz [1][3]. NIE wpisujesz nazw plikow - sam numer.
    Zdanie bez numeru czytelnik zobaczy jako Twoj wlasny komentarz, nie fakt z notatek,
    wiec nie zostawiaj bez numeru niczego, co pochodzi z notatek.
-3. Zanim napiszesz, ze czegos nie ma, sprawdz KAZDY podany fragment po kolei.
-   Odpowiedz moze byc w ktorymkolwiek z nich, takze czesciowa. Czesciowa odpowiedz
-   z podaniem zrodla jest lepsza niz odmowa.
-4. Dopiero gdy ZADEN fragment nie zawiera odpowiedzi, piszesz doslownie: {REFUSAL}
-   Nie zgadujesz, nie parafrazujesz pytania, nie uzupelniasz braku wlasna wiedza.
-   Gdy odmawiasz, nie podajesz zadnego zrodla.
-5. Jesli fragmenty sobie przecza, mowisz o tym wprost i cytujesz oba zrodla.
-5a. CZYTASZ RAMKE FRAGMENTU, NIE TYLKO TRESC. Naglowek sekcji mowi, jaki status ma
+3. JEDNA decyzja, dwa mozliwe wyjscia - nigdy oba naraz.
+   DOMYSLNIE JESTES W (A). Fragmenty zostaly wybrane przez wyszukiwarke, bo pasuja
+   do pytania - zakladaj, ze odpowiedz tam jest, dopoki nie sprawdzisz, ze nie ma.
+     (A) ktorykolwiek fragment daje odpowiedz, takze czesciowa albo posrednia ->
+         odpowiadasz i cytujesz. Odpowiedz czesciowa ze zrodlem jest lepsza niz
+         odmowa. NIE piszesz wtedy formulki odmowy - ani na poczatku, ani nigdzie.
+     (B) dopiero gdy przeszedles WSZYSTKIE fragmenty po kolei i zaden nie dotyka
+         tematu pytania -> piszesz doslownie: {REFUSAL} i na tym konczysz.
+         Nie zgadujesz, nie parafrazujesz pytania, nie uzupelniasz braku wlasna
+         wiedza, nie podajesz zadnego zrodla.
+   Dwa czeste bledy, oba kosztowne:
+     - formulka odmowy, a po niej wyjasnienie z przypisem. To znaczy, ze wybrales
+       oba wyjscia naraz. Jesli masz co cytowac, jestes w (A).
+     - odmowa dlatego, ze fragment nie jest sformulowany doslownie tak jak pytanie.
+       Fragment opisujacy problemy agenta do maili ODPOWIADA na pytanie "co poszlo
+       nie tak przy pierwszym agencie do maili". Fragment o konwencjach pisania
+       notatek ODPOWIADA na pytanie, czy wiecej folderow poprawi wyszukiwanie.
+       Szukasz tematu, nie tych samych slow.
+4. Jesli fragmenty sobie przecza, mowisz o tym wprost i cytujesz oba zrodla.
+4a. CZYTASZ RAMKE FRAGMENTU, NIE TYLKO TRESC. Naglowek sekcji mowi, jaki status ma
    to, co pod nim stoi. Naglowki w rodzaju "Propozycja", "Do rozwazenia", "Swiadomie
    odlozone", "Co jest propozycja, a nie moja decyzja", "Nastepne kroki", "Warte
    sprawdzenia" oznaczaja POMYSL, ktory NIE zostal wdrozony. Opisujesz go jako plan
@@ -552,11 +669,11 @@ Zasady, ktorych nie wolno zlamac:
    DOBRZE: "W notatkach jest propozycja folderu raw/ z cyklicznym przetwarzaniem,
            ale zapisana jako pomysl do rozwazenia, nie jako wdrozone rozwiazanie."
    To samo dotyczy czasu: fragment moze opisywac stan sprzed miesiecy.
-6. Odpowiadasz zwiezle, w jezyku pytania. Nie opisujesz swojego toku rozumowania.
+5. Odpowiadasz zwiezle, w jezyku pytania. Nie opisujesz swojego toku rozumowania.
    Mozesz uzywac markdowna: **pogrubienie**, listy zaczynane myslnikiem, `kod`.
    Nie uzywasz naglowkow (#) - odpowiedz to kilka akapitow, nie dokument.
-7. Piszesz wylacznie alfabetem lacinskim. Nie uzywasz cyrylicy.
-8. Notatki sa pisane w PIERWSZEJ OSOBIE przez uzytkownika. Ty nie jestes uzytkownikiem.
+6. Piszesz wylacznie alfabetem lacinskim. Nie uzywasz cyrylicy.
+7. Notatki sa pisane w PIERWSZEJ OSOBIE przez uzytkownika. Ty nie jestes uzytkownikiem.
    Zwracasz sie do niego w drugiej osobie: "Twoje", "wybrales", "mieszkasz".
    Nigdy nie piszesz o uzytkowniku "jestem", "mieszkam", "moje", "moim celem".
 """
@@ -789,10 +906,26 @@ def ma_cyrylice(text: str) -> bool:
 # Regula w prompcie systemowym (punkt 8) tego nie wystarcza - dziala niekonsekwentnie,
 # bo kontekst z notatek jest dluzszy i "glosniejszy" niz jedno zdanie instrukcji.
 # Dokladnie ta sama sytuacja co z cyrylica: kontrola musi byc po stronie kodu.
+#
+# Kalibracja wzorcow po pomiarze 2026-08-09 - obie zmiany maja konkretna przyczyne:
+#
+# (1) "mnie" i "mna" WYPADLY z listy. Agent uzywa ich o sobie zupelnie poprawnie
+#     ("wykorzystujesz mnie do przeszukiwania notatek"). Razem z "nie mam dostepu"
+#     dawalo to dwa sygnaly, ponawianie odpalalo sie bez powodu i model produkowal
+#     potworki w rodzaju "Wykorzystujesz mnie Ty - lokalne narzedzie...".
+# (2) "mam/jestem/wiem" nie licza sie po slowie "nie". "Nie mam tej informacji"
+#     mowi agent o sobie, nie uzytkownik o sobie.
+# (3) Doszly czasowniki 1 os. czasu terazniejszego spoza listy. Odpowiedz o
+#     schemacie "Jestem <zawod> [...] Pochodze z <miejsce> i regularnie wracam"
+#     miala TYLKO jeden sygnal ("jestem") i przeszla niezauwazona - agent przejal
+#     tozsamosc uzytkownika, a kontrola tego nie zlapala. Przyklady celowo bez
+#     danych osobowych: komentarze ida na publicznego gita, notatki nie.
 _OSOBA_WZORCE = (
-    re.compile(r"\b(moj|moja|moje|moim|mojego|mojej|moich|moimi|mna|mnie)\b"),
+    re.compile(r"\b(moj|moja|moje|moim|mojego|mojej|moich|moimi)\b"),
     re.compile(r"\b\w+(lem|lam)\b"),          # odmowilem, zbudowalem - 1 os. czasu przeszlego
-    re.compile(r"\b(jestem|mam|wiem|mieszkam|szukam)\b"),
+    re.compile(r"(?<!nie )\b(jestem|mam|wiem|mieszkam|szukam)\b"),
+    re.compile(r"\b(pochodze|wracam|uwazam|zamierzam|planuje|studiuje|wole|"
+               r"pracuje u|urodzilem)\b"),
 )
 
 
@@ -830,6 +963,69 @@ def czy_odmowa(odpowiedz: str) -> bool:
     dobrej zmiany w architekturze.
     """
     return bez_ogonkow_core(odpowiedz).strip().startswith(bez_ogonkow_core(REFUSAL)[:22])
+
+
+# Parafrazy odmowy. Model czesto NIE uzywa doslownej formulki z regoly 4, tylko
+# pisze wlasnymi slowami: "Nie znalazlem informacji dotyczacych kosztow licencji".
+_ODMOWA_LUZNA = (
+    "nie znalazlem",
+    "nie ma informacji",
+    "nie znajduje sie w notatkach",
+    "nie zawieraja informacji",
+    "brak informacji",
+    "nie jest opisane w notatkach",
+    "notatki nie zawieraja",
+)
+
+
+_PRZYPIS_RE = _re.compile(r"\[\d{1,2}\]")
+
+
+def odklej_odmowe(text: str) -> str:
+    """Usuwa formulke odmowy, gdy zaraz po niej stoi prawdziwa odpowiedz.
+
+    Zmierzone 2026-08-09, pytanie "Dlaczego nie chce isc w strone dashboardow":
+        "Nie znalazlem tego w notatkach. [1][2] Jestes swiadomy, ze odrzucasz
+         kierunki zwiazane z BI, poniewaz uwazasz je za obszar, ktory..."
+    Model wypisal formulke ORAZ poprawna odpowiedz z cytowaniami. To reguly 3 i 4
+    promptu walczace ze soba: 3 kaze sprawdzic kazdy fragment i preferowac
+    odpowiedz czesciowa, 4 kaze odmowic doslownie. Model wykonal obie.
+
+    Kolejne zdania w prompcie tego nie naprawialy - dodanie regul wypycha
+    wczesniejsze (ta lekcja powtorzyla sie w tym projekcie trzy razy). Dlatego
+    poprawka siedzi w kodzie i jest WASKA: kasujemy formulke tylko wtedy, gdy
+    reszta odpowiedzi ma przypis, czyli realnie opiera sie na notatkach.
+    Sama odmowa - bez tresci po niej - zostaje nietknieta.
+    """
+    if not czy_odmowa(text):
+        return text
+    # ciecie po pierwszej kropce, nie po dlugosci REFUSAL - model pisze z ogonkami
+    # ("znalazlem" vs "znalazłem") i moze dodac spacje albo zmienic interpunkcje
+    s = text.strip()
+    kropka = s.find(".")
+    if kropka == -1:
+        return text
+    reszta = s[kropka + 1:].lstrip(" \t\n:-")
+    if len(reszta) > 40 and _PRZYPIS_RE.search(reszta):
+        return reszta
+    return text
+
+
+def czy_odmowa_luzna(odpowiedz: str, okno: int = 160) -> bool:
+    """Czy odpowiedz ZACZYNA sie od odmowy, takze sparafrazowanej.
+
+    Osobna od czy_odmowa() celowo. czy_odmowa() steruje plakietka w interfejsie
+    i musi byc scisla: odpowiedz "Nie znalazlem informacji o kosztach, ale
+    w notatkach jest X [1]" JEST odpowiedzia z notatek i plakietka ma zostac
+    zielona. Tu natomiast mierzymy co innego - czy model zaczal od przyznania
+    sie do braku - i luzniejsze dopasowanie jest wlasciwe.
+
+    Powod powstania (pomiar 2026-08-09): 4 z 7 pytan policzonych jako
+    "zmyslil" zaczynalo sie od parafrazy odmowy. Metryka liczyla poprawne
+    zachowanie jako konfabulacje i zanizala wynik o kilkanascie punktow.
+    """
+    poczatek = bez_ogonkow_core(odpowiedz).strip().lower()[:okno]
+    return any(f in poczatek for f in _ODMOWA_LUZNA)
 
 
 def chat(
@@ -979,6 +1175,8 @@ def answer(
             "(model zwrocil pusta odpowiedz - najczestsza przyczyna to za niski "
             "NUM_PREDICT przy wlaczonym trybie rozumowania)"
         )
+
+    text = odklej_odmowe(text)
 
     # unikalne zrodla z zachowaniem kolejnosci rankingu
     sources: list[str] = []

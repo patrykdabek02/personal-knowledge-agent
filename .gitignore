@@ -49,6 +49,7 @@ wpadki.jsonl
 results.csv
 results*.csv
 questions.csv
+questions.csv.bak
 # podglad odpowiedzi do oceny recznej - zawiera fragmenty notatek
 do_oceny.txt
 do_oceny*.txt
@@ -65,3 +66,11 @@ env/
 Thumbs.db
 .idea/
 .vscode/
+
+# podglady transkryptow - surowe cudze rozmowy
+podglad*.txt
+watki.txt
+
+# wizualizacje maja WKLEJONA tresc fragmentow w kodzie strony
+mapa-wektorow.html
+graf-notatek.html

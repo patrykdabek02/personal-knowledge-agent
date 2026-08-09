@@ -87,16 +87,24 @@ def source_matches(expected: str, actual: str) -> bool:
 def calibrate(rows: list[dict], k: int) -> None:
     in_scope: list[float] = []
     out_scope: list[float] = []
+    # (najlepszy_dystans, margines, czy_bm25_trafil) - potrzebne do siatki 2D nizej
+    prof_in: list[tuple] = []
+    prof_out: list[tuple] = []
 
     print(f"Kalibracja na {len(rows)} pytaniach (sam retrieval, bez LLM)...\n")
+    print("  tag    dystans  margines  bm25  pytanie")
     for row in rows:
         # max_distance=None -> nic nie odrzucamy, chcemy zobaczyc surowe dystanse
         _, all_hits = core.search(row["pytanie"], k=k, max_distance=None)
         best = all_hits[0].distance if all_hits else 2.0
+        marg = core.margines(all_hits)
+        lex = core.trafienie_leksykalne(row["pytanie"]) if core.USE_BM25 else False
         is_out = row["oczekiwane_zrodlo"].upper() == OUT_OF_SCOPE
         (out_scope if is_out else in_scope).append(best)
+        (prof_out if is_out else prof_in).append((best, marg, lex))
         tag = "POZA " if is_out else "W ZAK"
-        print(f"  [{tag}] {best:.3f}  {row['pytanie'][:60]}")
+        m = "  n/d " if marg is None else f"{marg:6.3f}"
+        print(f"  [{tag}] {best:6.3f}  {m}   {'tak' if lex else ' - '}   {row['pytanie'][:50]}")
 
     if not in_scope:
         print("\nBrak pytan w zakresie - nie ma czego kalibrowac.")
@@ -143,17 +151,124 @@ def calibrate(rows: list[dict], k: int) -> None:
         print("       To normalne. Wybierz strone, po ktorej wolisz sie mylic:")
         print("       nizszy prog = czesciej 'nie wiem', wyzszy = czesciej zmyslona odpowiedz.")
 
+    siatka_2d(prof_in, prof_out, best_threshold or 0.65)
+
+
+def przechodzi(prof: tuple, prog: float, marg_min: float) -> bool:
+    """Ta sama decyzja co core.select_context, tylko na gotowym profilu."""
+    best, marg, lex = prof
+    if best > prog:
+        return False
+    if marg is not None and marg < marg_min and not lex:
+        return False
+    return True
+
+
+def siatka_2d(prof_in: list[tuple], prof_out: list[tuple], prog_ref: float) -> None:
+    """Przemiata prog RAZEM z marginesem.
+
+    Powod istnienia: przemiatanie samego progu (wyzej) nie widzi bramki marginesu
+    z core.select_context, wiec rekomenduje wartosc dla mechanizmu, ktorego juz nie ma.
+    Tu liczymy dokladnie to, co robi produkcja.
+
+    Kolumna marg=0.00 odpowiada zachowaniu SPRZED 2026-08-09 - roznica miedzy nia
+    a reszta wiersza to caly zysk (albo strata) z bramki.
+    """
+    if not prof_in or not prof_out:
+        return
+    total = len(prof_in) + len(prof_out)
+    marginesy = [0.00, 0.02, 0.03, 0.05, 0.08, 0.12]
+    progi = [round(prog_ref + d, 2) for d in (-0.10, -0.05, 0.0, 0.05, 0.10)]
+
+    print("\n" + "=" * 62)
+    print("SIATKA: PROG x MARGINES  (laczna dokladnosc)")
+    print("=" * 62)
+    print("  prog \\ marg " + "".join(f"{m:>7.2f}" for m in marginesy))
+
+    najlepszy = (-1.0, None, None)
+    for prog in progi:
+        wiersz = f"  {prog:.2f}       "
+        for mm in marginesy:
+            traf = sum(1 for p in prof_in if przechodzi(p, prog, mm))
+            odm = sum(1 for p in prof_out if not przechodzi(p, prog, mm))
+            wynik = (traf + odm) / total
+            if wynik > najlepszy[0]:
+                najlepszy = (wynik, prog, mm)
+            wiersz += f"{wynik:>7.0%}"
+        print(wiersz)
+
+    w, p, m = najlepszy
+    traf = sum(1 for x in prof_in if przechodzi(x, p, m))
+    odm = sum(1 for x in prof_out if not przechodzi(x, p, m))
+    print("\n" + "=" * 62)
+    print(f"NAJLEPSZA PARA: MAX_DISTANCE={p:.2f}  MARGINES_MIN={m:.2f}  ({w:.0%})")
+    print(f"  trafione w zakresie: {traf}/{len(prof_in)}   poprawne odmowy: {odm}/{len(prof_out)}")
+    print("=" * 62)
+    print(f'  PowerShell:  $env:MAX_DISTANCE="{p:.2f}"; $env:MARGINES_MIN="{m:.2f}"')
+
+    print("\nPYTANIA POZA ZAKRESEM, KTORE MIMO TO PRZESZLY (przy najlepszej parze):")
+    zle = [i for i, x in enumerate(prof_out) if przechodzi(x, p, m)]
+    if not zle:
+        print("  brak - bramka odcina komplet")
+    else:
+        for i in zle:
+            b, mg, lx = prof_out[i]
+            print(f"  dystans {b:.3f}  margines {'n/d' if mg is None else f'{mg:.3f}'}"
+                  f"  bm25 {'tak' if lx else '-'}")
+
 
 # --------------------------------------------------------------------------
 # Tryb 2: pelna ewaluacja
 # --------------------------------------------------------------------------
 
-def full_eval(rows: list[dict], k: int, max_distance: float, out_path: Path) -> None:
-    results: list[dict] = []
+KOLUMNY = [
+    "pytanie", "oczekiwane_zrodlo", "odpowiedz", "zrodla", "top1_zrodlo",
+    "trafienie_top1", "trafienie_topk", "odmowa", "odmowa_poprawna",
+    "najlepszy_dystans", "czas_s", "blad", "ocena_reczna",
+]
+
+
+def wczytaj_gotowe(out_path: Path) -> list[dict]:
+    """Wyniki z przerwanego przebiegu, jesli plik istnieje."""
+    if not out_path.exists():
+        return []
+    with out_path.open(encoding="utf-8-sig", newline="") as fh:
+        return [r for r in csv.DictReader(fh) if r.get("pytanie")]
+
+
+def full_eval(rows: list[dict], k: int, max_distance: float, out_path: Path,
+              wznow: bool = False) -> None:
+    """Pelny przebieg z generowaniem.
+
+    Zapis jest PRZYROSTOWY - kazdy wiersz laduje na dysku od razu po policzeniu.
+    Powod: przebieg na 74 pytaniach to kilkanascie minut pracy modelu, a padniecie
+    maszyny w 70. pytaniu kasowalo caly wynik. Z --wznow przebieg podejmuje prace
+    od pierwszego pytania, ktorego nie ma jeszcze w pliku wyjsciowym.
+    """
+    results: list[dict] = wczytaj_gotowe(out_path) if wznow else []
+    zrobione = {r["pytanie"] for r in results}
+    if zrobione:
+        print(f"Wznowienie: {len(zrobione)} pytan juz policzonych, pomijam je.\n")
+
     print(f"Pelna ewaluacja: {len(rows)} pytan, k={k}, prog={max_distance}\n")
+
+    # Plik otwarty na caly przebieg, flush po kazdym wierszu.
+    tryb = "a" if zrobione else "w"
+    fh_out = out_path.open(tryb, encoding="utf-8-sig", newline="")
+    pisarz = csv.DictWriter(fh_out, fieldnames=KOLUMNY)
+    if tryb == "w":
+        pisarz.writeheader()
+        fh_out.flush()
+
+    def zapisz(wiersz: dict) -> None:
+        results.append(wiersz)
+        pisarz.writerow(wiersz)
+        fh_out.flush()
 
     for i, row in enumerate(rows, 1):
         question = row["pytanie"]
+        if question in zrobione:
+            continue
         expected = row["oczekiwane_zrodlo"]
         is_out = expected.upper() == OUT_OF_SCOPE
 
@@ -164,7 +279,7 @@ def full_eval(rows: list[dict], k: int, max_distance: float, out_path: Path) -> 
             error = ""
         except Exception as exc:  # noqa: BLE001
             print(f"BLAD: {exc}")
-            results.append(
+            zapisz(
                 {
                     "pytanie": question, "oczekiwane_zrodlo": expected, "odpowiedz": "",
                     "zrodla": "", "top1_zrodlo": "", "trafienie_top1": "", "trafienie_topk": "",
@@ -183,7 +298,11 @@ def full_eval(rows: list[dict], k: int, max_distance: float, out_path: Path) -> 
 
         if is_out:
             hit1 = hitk = ""
-            refusal_ok = "TAK" if (refused or not res["in_scope"]) else "NIE"
+            # odmowa parafrazowana liczy sie tak samo jak doslowna - patrz
+            # core.czy_odmowa_luzna(). Bez tego metryka karala poprawne zachowanie.
+            refusal_ok = "TAK" if (
+                refused or not res["in_scope"] or core.czy_odmowa_luzna(res["answer"])
+            ) else "NIE"
             verdict = f"odmowa={'ok' if refusal_ok == 'TAK' else 'BLAD - zmyslil'}"
         else:
             hit1 = "TAK" if source_matches(expected, top1) else "NIE"
@@ -193,7 +312,7 @@ def full_eval(rows: list[dict], k: int, max_distance: float, out_path: Path) -> 
 
         print(f"{verdict} ({total_s:.1f}s)")
 
-        results.append(
+        zapisz(
             {
                 "pytanie": question,
                 "oczekiwane_zrodlo": expected,
@@ -211,15 +330,13 @@ def full_eval(rows: list[dict], k: int, max_distance: float, out_path: Path) -> 
             }
         )
 
-    with out_path.open("w", encoding="utf-8-sig", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=list(results[0].keys()))
-        writer.writeheader()
-        writer.writerows(results)
+    fh_out.close()
 
     # --- metryki ---
     scoped = [r for r in results if r["oczekiwane_zrodlo"].upper() != OUT_OF_SCOPE and not r["blad"]]
     out = [r for r in results if r["oczekiwane_zrodlo"].upper() == OUT_OF_SCOPE and not r["blad"]]
-    times = [r["czas_s"] for r in results if not r["blad"]]
+    # wiersze wczytane z pliku po --wznow maja wartosci tekstowe
+    times = [float(r["czas_s"]) for r in results if not r["blad"] and r["czas_s"] != ""]
 
     def pct(n: int, d: int) -> str:
         return f"{n}/{d} ({n / d:.0%})" if d else "n/d"
@@ -257,6 +374,8 @@ def main() -> int:
     ap.add_argument("--k", type=int, default=core.TOP_K)
     ap.add_argument("--max-distance", type=float, default=core.MAX_DISTANCE)
     ap.add_argument("--calibrate", action="store_true", help="tylko kalibracja progu, bez LLM")
+    ap.add_argument("--wznow", action="store_true",
+                    help="dopisz do istniejacego --out, pomijajac pytania juz policzone")
     args = ap.parse_args()
 
     path = Path(args.questions)
@@ -272,7 +391,7 @@ def main() -> int:
     if args.calibrate:
         calibrate(rows, args.k)
     else:
-        full_eval(rows, args.k, args.max_distance, Path(args.out))
+        full_eval(rows, args.k, args.max_distance, Path(args.out), wznow=args.wznow)
     return 0
 
 
