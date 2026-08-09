@@ -40,8 +40,16 @@ class SearchRequest(BaseModel):
     category: str | None = None
 
 
+class Wiadomosc(BaseModel):
+    role: str
+    content: str
+
+
 class AskRequest(SearchRequest):
-    pass
+    # Historia rozmowy. Bez niej doprecyzowania w rodzaju "a dlaczego akurat tyle?"
+    # albo "nastepnym razem wykorzystam to" trafialy do modelu bez punktu odniesienia
+    # i dostawaly odpowiedz obok tematu.
+    historia: list[Wiadomosc] = []
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -86,7 +94,11 @@ def search(req: SearchRequest) -> dict:
 @app.post("/ask")
 def ask(req: AskRequest) -> dict:
     return core.answer(
-        req.query, k=req.k, max_distance=req.max_distance, category=req.category
+        req.query,
+        k=req.k,
+        max_distance=req.max_distance,
+        category=req.category,
+        historia=[w.model_dump() for w in req.historia],
     )
 
 
@@ -94,13 +106,12 @@ def ask(req: AskRequest) -> dict:
 def hybryda(req: AskRequest) -> dict:
     """Notatki, a gdy ich brak - wiedza modelu, jawnie oznaczona."""
     return core.answer_hybrid(
-        req.query, k=req.k, max_distance=req.max_distance, category=req.category
+        req.query,
+        k=req.k,
+        max_distance=req.max_distance,
+        category=req.category,
+        historia=[w.model_dump() for w in req.historia],
     )
-
-
-class Wiadomosc(BaseModel):
-    role: str
-    content: str
 
 
 class ChatRequest(BaseModel):
@@ -118,6 +129,26 @@ def czat(req: ChatRequest) -> dict:
         "generation_s": round(time.perf_counter() - t0, 3),
         "tryb": "rozmowa",
     }
+
+
+# ===================== stan modeli =====================
+
+
+@app.get("/modele")
+def modele() -> dict:
+    return core.stan_modeli()
+
+
+class PrzelaczModel(BaseModel):
+    nazwa: str
+    wlacz: bool
+
+
+@app.post("/modele/przelacz")
+def przelacz(req: PrzelaczModel) -> dict:
+    wynik = core.przelacz_model(req.nazwa, req.wlacz)
+    wynik["stan"] = core.stan_modeli()
+    return wynik
 
 
 # ===================== dopisywanie do notatek =====================
@@ -150,6 +181,35 @@ def reindeks() -> dict:
     core.reset_cache()
     wynik["chunks"] = core.liczba_fragmentow()
     return wynik
+
+
+# ===================== wpadki (zle odpowiedzi) =====================
+
+
+class WpadkaRequest(BaseModel):
+    pytanie: str
+    odpowiedz: str = ""
+    tryb: str = ""
+    co_bylo_zle: str = ""
+    zrodlo_wiedzy: str = ""
+    max_distance: float | None = None
+    k: int | None = None
+    najlepszy_dystans: float | None = None
+    zrodla: list[str] = []
+
+
+@app.post("/wpadka")
+def wpadka(req: WpadkaRequest) -> dict:
+    try:
+        return pamiec.zglos_wpadke(req.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/wpadki")
+def wpadki() -> dict:
+    lista = pamiec.lista_wpadek()
+    return {"razem": len(lista), "wpadki": lista}
 
 
 # ===================== historia rozmow =====================

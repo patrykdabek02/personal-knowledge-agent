@@ -414,6 +414,48 @@ Masz też `POST /ask`, które robi cały RAG w jednym strzale — wygodne do tes
 
 ---
 
+## ETAP 5.5 — n8n
+
+Ten krok został pierwotnie pominięty w instrukcji, bo n8n był już zainstalowany na maszynie, na której powstawał projekt. Osoba zaczynająca od zera dochodziła do Etapu 6 i utykała, nie mając czego importować.
+
+### 5.5.1 Node.js
+
+n8n jest aplikacją Node'ową, więc najpierw:
+
+```powershell
+node --version
+```
+
+Jeśli komenda nie działa, zainstaluj Node.js w wersji LTS z nodejs.org. n8n podaje wymaganą wersję w komunikacie błędu, jeśli Twoja jest za stara.
+
+### 5.5.2 Instalacja
+
+```powershell
+npm install -g n8n
+```
+
+Instalacja globalna, nie Docker. Docker byłby czystszy pod względem izolacji, ale wymagałby Docker Desktopa — a jedną z decyzji tego projektu było unikanie Dockera (patrz `decyzje/baza-wektorowa.md`, gdzie z tego samego powodu wybrana została Chroma zamiast Qdranta).
+
+Pobranie zajmuje kilka minut, bo n8n ciągnie sporo zależności.
+
+### 5.5.3 Uruchomienie
+
+```powershell
+n8n
+```
+
+Interfejs staje pod `http://localhost:5678`. Okno musi zostać otwarte — zamknięcie zatrzymuje n8n, tak samo jak przy serwerze uvicorn z Etapu 5.
+
+Sprawdzenie, co faktycznie masz zainstalowane:
+
+```powershell
+npm ls -g --depth=0 | Select-String n8n
+```
+
+Wersja, na której to działało: **n8n 2.29.10**. Przy starszych nazwy niektórych ustawień w interfejsie się różnią — w szczególności przełącznik publikujący workflow bywał nazwany **Active**, a nie **Publish**.
+
+---
+
 ## ETAP 6 — Workflow n8n
 
 ### 6.1 Import

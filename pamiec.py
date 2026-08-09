@@ -178,6 +178,67 @@ def usun_rozmowe(rozmowa_id: str) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------- wpadki
+
+
+WPADKI = PROJEKT / "wpadki.jsonl"
+
+
+def zglos_wpadke(dane: dict) -> dict:
+    """Dopisuje zla odpowiedz do pliku, z ktorego da sie zrobic zestaw testowy.
+
+    Po co to istnieje: zestaw kalibracyjny zawieral wylacznie pytania faktograficzne,
+    bo takie sam wymyslilem. Przez to prog 0.52 wygladal na optymalny, a w praktyce
+    odrzucal pytania konwersacyjne - "co wiesz o mnie" mialo dystans 0.522 i odpadalo
+    o dwie tysieczne. Zestaw testowy nie reprezentowal rzeczywistego uzycia.
+
+    Wpadki zbierane z codziennej pracy tego problemu nie maja: to sa pytania, ktore
+    naprawde zadales, w brzmieniu, w jakim je zadales.
+
+    JSONL, nie CSV: kazdy wiersz jest niezalezny, wiec dopisywanie nie moze uszkodzic
+    wczesniejszych, a odpowiedzi zawieraja przecinki, cudzyslowy i znaki nowej linii.
+    """
+    wpis = {
+        "czas": _teraz().isoformat(timespec="seconds"),
+        "pytanie": (dane.get("pytanie") or "").strip(),
+        "odpowiedz": (dane.get("odpowiedz") or "").strip(),
+        "tryb": dane.get("tryb", ""),
+        "co_bylo_zle": (dane.get("co_bylo_zle") or "").strip(),
+        "zrodlo_wiedzy": dane.get("zrodlo_wiedzy", ""),
+        "max_distance": dane.get("max_distance"),
+        "k": dane.get("k"),
+        "najlepszy_dystans": dane.get("najlepszy_dystans"),
+        "zrodla": dane.get("zrodla") or [],
+    }
+    if not wpis["pytanie"]:
+        raise ValueError("brak pytania")
+
+    with WPADKI.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(wpis, ensure_ascii=False) + "\n")
+    return {"ok": True, "plik": str(WPADKI), "razem": _ile_wpadek()}
+
+
+def _ile_wpadek() -> int:
+    if not WPADKI.exists():
+        return 0
+    with WPADKI.open(encoding="utf-8") as f:
+        return sum(1 for linia in f if linia.strip())
+
+
+def lista_wpadek(limit: int = 50) -> list[dict]:
+    if not WPADKI.exists():
+        return []
+    out = []
+    with WPADKI.open(encoding="utf-8") as f:
+        for linia in f:
+            if linia.strip():
+                try:
+                    out.append(json.loads(linia))
+                except Exception:  # noqa: BLE001 - jeden uszkodzony wiersz nie psuje reszty
+                    continue
+    return out[-limit:][::-1]
+
+
 # ---------------------------------------------------------------------- zrzuty
 
 

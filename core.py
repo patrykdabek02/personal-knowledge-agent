@@ -113,6 +113,40 @@ NUM_PREDICT = int(os.environ.get("NUM_PREDICT", "1200"))
 # Jesli model albo wersja Ollamy tego nie wspiera, kod cofa sie automatycznie.
 DISABLE_THINKING = os.environ.get("DISABLE_THINKING", "1") not in ("0", "false", "False")
 
+# Poziom rozumowania. Ollama przyjmuje w polu "think" nie tylko true/false,
+# ale takze poziomy: "low", "medium", "high", "max". To nie jest przelacznik,
+# tylko suwak - a my przez caly czas uzywalismy go jak przelacznika.
+#
+# Dlaczego to wazne: wylaczenie thinkingu zbilo czas z 24,9 s do 9,5 s, ale
+# odbieralo modelowi rozumowanie tam, gdzie faktycznie sie przydaje - przy
+# ocenie, czy fakt jest trwaly, albo przy zderzaniu sprzecznych twierdzen.
+# Poziom posredni pozwala placic za rozumowanie tylko tam, gdzie ma zwrot.
+#
+# UWAGA na NUM_PREDICT: przy wlaczonym rozumowaniu blok <think> zjada limit
+# tokenow. Zbyt niski NUM_PREDICT ucina go w polowie i po wycieciu zostaje
+# pusta odpowiedz - dokladnie ten blad mielismy przy 600. Kod podnosi limit
+# automatycznie, gdy think nie jest wylaczony.
+#
+# Wartosci: "false" (bez rozumowania), "true", "low", "medium", "high", "max".
+POZIOMY_THINK = ("low", "medium", "high", "max")
+THINK = os.environ.get("THINK", "false" if DISABLE_THINKING else "true").strip().lower()
+
+
+def _think_wartosc(poziom: str | bool | None):
+    """Zamienia ustawienie na to, co Ollama przyjmuje w polu "think"."""
+    if poziom is None:
+        poziom = THINK
+    if isinstance(poziom, bool):
+        return poziom
+    p = str(poziom).strip().lower()
+    if p in ("false", "0", "nie", "off"):
+        return False
+    if p in ("true", "1", "tak", "on"):
+        return True
+    if p in POZIOMY_THINK:
+        return p
+    return False
+
 EMBED_TIMEOUT = int(os.environ.get("EMBED_TIMEOUT", "300"))
 CHAT_TIMEOUT = int(os.environ.get("CHAT_TIMEOUT", "600"))
 
@@ -328,8 +362,9 @@ def reset_cache() -> None:
     dopisany tekst zostal SCALONY z istniejaca sekcja, liczba fragmentow bywa
     ta sama mimo zmienionej tresci. Wtedy tylko jawny reset ratuje sytuacje.
     """
-    global _bm25_cache
+    global _bm25_cache, _tozsamosc_cache
     _bm25_cache = None
+    _tozsamosc_cache = None      # notatka o tozsamosci mogla sie wlasnie zmienic
 
 
 def liczba_fragmentow() -> int:
@@ -496,7 +531,11 @@ fragmentow notatek podanych w sekcji KONTEKST.
 
 Zasady, ktorych nie wolno zlamac:
 1. Nie korzystasz z wiedzy spoza KONTEKSTU. Nawet jesli znasz odpowiedz - nie uzywasz jej.
-2. Po kazdym twierdzeniu podajesz zrodlo w nawiasie kwadratowym, np. [zrodlo: projekty/rag.md].
+2. Po kazdym twierdzeniu podajesz numer fragmentu w nawiasie kwadratowym: [1], [2].
+   Numery sa widoczne w KONTEKSCIE przy kazdym fragmencie. Gdy twierdzenie opiera sie
+   na kilku fragmentach, piszesz [1][3]. NIE wpisujesz nazw plikow - sam numer.
+   Zdanie bez numeru czytelnik zobaczy jako Twoj wlasny komentarz, nie fakt z notatek,
+   wiec nie zostawiaj bez numeru niczego, co pochodzi z notatek.
 3. Zanim napiszesz, ze czegos nie ma, sprawdz KAZDY podany fragment po kolei.
    Odpowiedz moze byc w ktorymkolwiek z nich, takze czesciowa. Czesciowa odpowiedz
    z podaniem zrodla jest lepsza niz odmowa.
@@ -504,7 +543,18 @@ Zasady, ktorych nie wolno zlamac:
    Nie zgadujesz, nie parafrazujesz pytania, nie uzupelniasz braku wlasna wiedza.
    Gdy odmawiasz, nie podajesz zadnego zrodla.
 5. Jesli fragmenty sobie przecza, mowisz o tym wprost i cytujesz oba zrodla.
+5a. CZYTASZ RAMKE FRAGMENTU, NIE TYLKO TRESC. Naglowek sekcji mowi, jaki status ma
+   to, co pod nim stoi. Naglowki w rodzaju "Propozycja", "Do rozwazenia", "Swiadomie
+   odlozone", "Co jest propozycja, a nie moja decyzja", "Nastepne kroki", "Warte
+   sprawdzenia" oznaczaja POMYSL, ktory NIE zostal wdrozony. Opisujesz go jako plan
+   albo rozwazana opcje - nigdy jako stan faktyczny.
+   ZLE:  "Surowy zrzut trafia do folderu raw/, przetwarzanie co 30 minut."
+   DOBRZE: "W notatkach jest propozycja folderu raw/ z cyklicznym przetwarzaniem,
+           ale zapisana jako pomysl do rozwazenia, nie jako wdrozone rozwiazanie."
+   To samo dotyczy czasu: fragment moze opisywac stan sprzed miesiecy.
 6. Odpowiadasz zwiezle, w jezyku pytania. Nie opisujesz swojego toku rozumowania.
+   Mozesz uzywac markdowna: **pogrubienie**, listy zaczynane myslnikiem, `kod`.
+   Nie uzywasz naglowkow (#) - odpowiedz to kilka akapitow, nie dokument.
 7. Piszesz wylacznie alfabetem lacinskim. Nie uzywasz cyrylicy.
 8. Notatki sa pisane w PIERWSZEJ OSOBIE przez uzytkownika. Ty nie jestes uzytkownikiem.
    Zwracasz sie do niego w drugiej osobie: "Twoje", "wybrales", "mieszkasz".
@@ -519,27 +569,142 @@ PYTANIE: {question}
 Odpowiedz zgodnie z zasadami. Pamietaj o cytowaniu zrodel."""
 
 
+# Naglowki oznaczajace tresc NIEWDROZONA. Rozpoznawane mechanicznie, a nie
+# pozostawione ocenie modelu.
+#
+# Powod: regula w prompcie ("sekcje typu Propozycja opisuj jako plan") nie
+# zadzialala. Model przeczytal sekcje "Co jest propozycja, a nie moja decyzja"
+# i zameldowal folder raw/ oraz przetwarzanie co 30 minut jako stan faktyczny.
+# To ta sama lekcja co przy cyrylicy i przy pierwszej osobie: instrukcja tekstowa
+# nie jest gwarancja. Znacznik doklejony do KAZDEGO fragmentu z osobna dziala
+# lepiej niz jedna zasada na poczatku promptu, bo stoi w miejscu uzycia danych.
+_POMYSL_RE = _re.compile(
+    r"propozycj|do rozwazenia|do rozwazeni|swiadomie odlozon|nastepne kroki|"
+    r"warte sprawdzenia|pomysl|plan(y|ow)?\b|kiedys|w przyszlosci|rozwazam|"
+    r"nie moja decyzj|zamiast budowania",
+    _re.IGNORECASE,
+)
+
+
+def czy_pomysl(heading: str) -> bool:
+    """Czy naglowek sekcji zapowiada pomysl, a nie wdrozony stan."""
+    return bool(_POMYSL_RE.search(bez_ogonkow_core(heading or "")))
+
+
 def build_context(hits: list[Hit]) -> str:
+    """Fragmenty numerowane, bez nazw plikow w widocznym miejscu.
+
+    Wczesniej etykieta zawierala sciezke pliku, wiec model wklejal ja do odpowiedzi
+    jako "[zrodlo: meta/o-mnie.md > Czego szukam]" - dlugie, powtarzalne i rozbijajace
+    zdanie. Numer wystarczy modelowi do wskazania fragmentu, a mapowanie numer -> plik
+    interfejs zna z pola `przypisy` i pokazuje pod odpowiedzia.
+
+    Dystans zostaje w kontekscie, bo pomaga modelowi wazyc sprzeczne fragmenty.
+    """
     parts = []
     for i, h in enumerate(hits, 1):
-        head = f" > {h.metadata.get('heading')}" if h.metadata.get("heading") else ""
+        naglowek = h.metadata.get("heading") or ""
+        head = f" > {naglowek}" if naglowek else ""
+        status = ""
+        if czy_pomysl(naglowek):
+            status = (
+                "\n[STATUS TEGO FRAGMENTU: POMYSL / PLAN - NIE JEST WDROZONY.\n"
+                " Nie wolno opisywac tego jako stanu faktycznego. Jesli uzywasz tej\n"
+                " tresci, piszesz \"jest pomysl, zeby...\" albo \"rozwazasz...\", nigdy\n"
+                " \"tak to dziala\".]"
+            )
         parts.append(
-            f"--- FRAGMENT {i} [zrodlo: {h.source}{head}] (dystans {h.distance:.3f}) ---\n{h.text}"
+            f"--- FRAGMENT [{i}] ({h.source}{head}, dystans {h.distance:.3f}) ---"
+            f"{status}\n{h.text}"
         )
     return "\n\n".join(parts)
 
 
-def build_messages(question: str, hits: list[Hit]) -> list[dict]:
-    return [
-        {"role": "system", "content": SYSTEM_PROMPT},
+def przypisy(hits: list[Hit]) -> list[dict]:
+    """Mapowanie numer -> plik, sekcja, dystans i podglad tresci.
+
+    Fragmenty znalezione WYLACZNIE przez BM25 nie maja dystansu wektorowego -
+    nosza sentinel 999.0, ktory blokuje im otwarcie bramki progu. To wartosc
+    techniczna, nie pomiar, wiec do interfejsu idzie None plus flaga `lexykalny`.
+    Pokazywanie "999.000" jako dystansu bylo mylace: sugerowalo skrajnie zle
+    dopasowanie, podczas gdy fragment trafil tu przez dokladne slowo.
+    """
+    out = []
+    for i, h in enumerate(hits, 1):
+        tekst = " ".join(h.text.split())
+        tylko_bm25 = h.distance >= 900
+        out.append(
+            {
+                "n": i,
+                "source": h.source,
+                "heading": h.metadata.get("heading") or "",
+                "distance": None if tylko_bm25 else round(h.distance, 4),
+                "lexykalny": tylko_bm25,
+                "pomysl": czy_pomysl(h.metadata.get("heading") or ""),
+                "fragment": tekst[:400] + ("..." if len(tekst) > 400 else ""),
+            }
+        )
+    return out
+
+
+SYSTEM_HYBRYDA_Z_NOTATKAMI = """Rozmawiasz z uzytkownikiem i masz do dyspozycji fragmenty
+jego notatek w sekcji KONTEKST. Notatki sa Twoim materialem, nie kagancem.
+
+Roznica wobec trybu scisle notatkowego: tam wolno Ci bylo powiedziec wylacznie to, co
+stoi w notatkach. Tutaj mozesz myslec. Mozesz laczyc fakty z notatek z wlasna wiedza,
+wyciagac wnioski, nie zgadzac sie, zwracac uwage na sprzecznosc, dopytac.
+
+Zasady:
+1. Fakty wziete z notatek oznaczasz numerem fragmentu: [1], [2]. To jest obowiazkowe.
+2. Wlasne wnioski, wiedze ogolna i opinie piszesz BEZ numeru. Interfejs pokaze je jako
+   niepoparte notatka i tak ma byc - czytelnik ma widziec, gdzie konczy sie zapis,
+   a zaczyna Twoje rozumowanie. Nie udajesz, ze wniosek jest cytatem.
+3. Gdy notatki nie dotycza pytania, po prostu odpowiadasz z wlasnej wiedzy. Nie
+   informujesz o tym osobnym zdaniem i nie tlumaczysz sie z braku notatek.
+4. Nie streszczasz kontekstu na sile. Fragment, ktory nie dotyczy pytania, pomijasz
+   w milczeniu - lepiej krotka trafna odpowiedz niz przeglad wszystkiego, co przyszlo.
+4a. Naglowek sekcji mowi, jaki status ma jej tresc. "Propozycja", "Do rozwazenia",
+   "Swiadomie odlozone", "Nastepne kroki" to POMYSLY, ktore nie zostaly wdrozone.
+   Nigdy nie przedstawiasz ich jako stanu faktycznego - piszesz "jest pomysl, zeby...",
+   a nie "tak to dziala".
+5. Bierzesz pod uwage wczesniejsze wiadomosci w rozmowie. Zdanie w rodzaju "nastepnym
+   razem wykorzystam to" odnosi sie do czegos, co padlo wczesniej - odczytujesz to
+   z historii, a nie odpowiadasz, ze nie wiesz, o co chodzi.
+6. Odpowiadasz zwiezle, po polsku, wylacznie alfabetem lacinskim.
+7. Notatki sa pisane przez uzytkownika w pierwszej osobie. Ty nie jestes uzytkownikiem -
+   zwracasz sie do niego w drugiej osobie.
+"""
+
+
+def build_messages(
+    question: str,
+    hits: list[Hit],
+    historia: list[dict] | None = None,
+    system: str | None = None,
+) -> list[dict]:
+    # Blok tozsamosci idzie takze tutaj, nie tylko na sciezke modelowa. Wlasnie ta,
+    # notatkowa, produkowala "Wykorzystuje Cie Patryk Dabek" - bo notatki sa pisane
+    # w pierwszej osobie i model przejmowal glos autora zamiast opowiadac o nim.
+    # Historia idzie MIEDZY prompt systemowy a biezace pytanie, jako zwykle tury
+    # rozmowy. Wklejanie jej do tresci pytania miesza dwie rzeczy: model traktowalby
+    # wtedy poprzednie odpowiedzi jak material do cytowania na rowni z notatkami.
+    wiadomosci = [
+        {"role": "system", "content": blok_tozsamosci() + (system or SYSTEM_PROMPT)}
+    ]
+    if historia:
+        wiadomosci += [
+            {"role": w["role"], "content": w["content"]} for w in historia[-6:]
+        ]
+    wiadomosci.append(
         {
             "role": "user",
             "content": USER_TEMPLATE.format(
                 context=build_context(hits) or "(brak fragmentow)",
                 question=question,
             ),
-        },
-    ]
+        }
+    )
+    return wiadomosci
 
 
 _THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL | re.IGNORECASE)
@@ -575,7 +740,16 @@ def strip_thinking(text: str) -> str:
     return _THINK_TAG_RE.sub("", cleaned).strip()
 
 
-def _chat_payload(messages: list[dict], temperature: float, think: bool | None) -> dict:
+def _chat_payload(messages: list[dict], temperature: float, think) -> dict:
+    # Rozumowanie zjada tokeny z tego samego limitu co odpowiedz. Przy niskim
+    # NUM_PREDICT blok <think> bywa ucinany w polowie, a po jego wycieciu
+    # zostaje pusty string - mielismy to przy 600. Dlatego przy wlaczonym
+    # rozumowaniu limit idzie w gore, tym bardziej im wyzszy poziom.
+    limit = NUM_PREDICT
+    if think not in (False, None):
+        mnoznik = {"low": 1.5, True: 2.0, "medium": 2.0, "high": 3.0, "max": 4.0}
+        limit = int(NUM_PREDICT * mnoznik.get(think, 2.0))
+
     payload: dict = {
         "model": CHAT_MODEL,
         "messages": messages,
@@ -583,7 +757,7 @@ def _chat_payload(messages: list[dict], temperature: float, think: bool | None) 
         "options": {
             "temperature": temperature,
             "num_ctx": NUM_CTX,
-            "num_predict": NUM_PREDICT,
+            "num_predict": limit,
         },
     }
     if think is not None:
@@ -622,6 +796,14 @@ _OSOBA_WZORCE = (
 )
 
 
+# Agent mowiacy o SOBIE uzywa pierwszej osoby calkiem poprawnie: "Jestem osobistym
+# agentem wiedzy". To nie jest przejecie tozsamosci uzytkownika i nie wolno tego
+# ponawiac - inaczej pytanie "czym jestes" zawsze kosztowaloby dwie generacje.
+_AUTOPREZENTACJA_RE = re.compile(
+    r"\bjestem\b[^.!?]{0,60}\b(agent|narzedzi|asystent|program|model)"
+)
+
+
 def ma_pierwsza_osobe(text: str) -> bool:
     """Czy model pisze jakby byl uzytkownikiem, zamiast mowic do niego.
 
@@ -630,6 +812,8 @@ def ma_pierwsza_osobe(text: str) -> bool:
     odpowiedzi z tego powodu kosztowaloby wiecej, niz daje.
     """
     t = bez_ogonkow_core(text)
+    if _AUTOPREZENTACJA_RE.search(t):
+        return False
     return sum(1 for w in _OSOBA_WZORCE if w.search(t)) >= 2
 
 
@@ -653,13 +837,14 @@ def chat(
     retries: int = 2,
     temperature: float = 0.1,
     wymus_druga_osobe: bool = False,
+    think=None,
 ) -> str:
     """Wywoluje model. Przy wykryciu cyrylicy ponawia raz z jawnym przypomnieniem.
 
     `wymus_druga_osobe` wlaczamy TYLKO na sciezce z notatkami. W trybie rozmowy
     pierwsza osoba jest poprawna - tam model mowi sam o sobie.
     """
-    odpowiedz = _chat_raw(messages, retries, temperature)
+    odpowiedz = _chat_raw(messages, retries, temperature, poziom_think=think)
 
     if wymus_druga_osobe and ma_pierwsza_osobe(odpowiedz):
         poprawka = messages + [
@@ -676,7 +861,7 @@ def chat(
                 ),
             },
         ]
-        druga = _chat_raw(poprawka, retries=0, temperature=temperature)
+        druga = _chat_raw(poprawka, retries=0, temperature=temperature, poziom_think=think)
         if druga.strip() and not ma_pierwsza_osobe(druga) and not ma_cyrylice(druga):
             return druga
         # nie udalo sie - pierwsza wersja jest merytorycznie poprawna, tylko zle
@@ -694,17 +879,22 @@ def chat(
                 ),
             },
         ]
-        druga = _chat_raw(poprawka, retries=0, temperature=temperature)
+        druga = _chat_raw(poprawka, retries=0, temperature=temperature, poziom_think=think)
         if druga.strip() and not ma_cyrylice(druga):
             return druga
         # ponowna proba tez zawiodla - oddajemy pierwsza wersje, lepsza niz nic
     return odpowiedz
 
 
-def _chat_raw(messages: list[dict], retries: int = 2, temperature: float = 0.1) -> str:
+def _chat_raw(
+    messages: list[dict],
+    retries: int = 2,
+    temperature: float = 0.1,
+    poziom_think=None,
+) -> str:
     global _think_supported
 
-    think: bool | None = False if (DISABLE_THINKING and _think_supported is not False) else None
+    think = _think_wartosc(poziom_think) if _think_supported is not False else None
 
     last_err: Exception | None = None
     for attempt in range(retries + 1):
@@ -732,15 +922,37 @@ def _chat_raw(messages: list[dict], retries: int = 2, temperature: float = 0.1) 
     )
 
 
+def zapytanie_z_kontekstem(question: str, historia: list[dict] | None) -> str:
+    """Skleja krotkie doprecyzowanie z poprzednim pytaniem, zeby mialo czego szukac.
+
+    "nastepnym razem wykorzystam to" samo w sobie nie ma tresci - wektor takiego
+    zdania nie wskazuje na nic. Doklejenie poprzedniej wypowiedzi uzytkownika daje
+    wyszukiwaniu punkt zaczepienia.
+
+    To heurystyka, nie przepisywanie zapytania modelem: dziala tylko dla krotkich
+    wypowiedzi, bo dlugie pytanie ma dosc wlasnej tresci, a doklejanie do niego
+    historii tylko rozmyloby wektor.
+    """
+    if not historia or len(question) > 60:
+        return question
+    poprzednie = [w["content"] for w in historia if w.get("role") == "user"]
+    if not poprzednie:
+        return question
+    return f"{poprzednie[-1]} {question}"
+
+
 def answer(
     question: str,
     k: int = TOP_K,
     max_distance: float | None = MAX_DISTANCE,
     category: str | None = None,
+    historia: list[dict] | None = None,
+    system: str | None = None,
 ) -> dict:
     """Pelny przebieg RAG: retrieval -> prompt -> generacja."""
     t0 = time.perf_counter()
-    hits, all_hits = search(question, k=k, max_distance=max_distance, category=category)
+    zapytanie = zapytanie_z_kontekstem(question, historia)
+    hits, all_hits = search(zapytanie, k=k, max_distance=max_distance, category=category)
     t_retrieval = time.perf_counter() - t0
 
     if not hits:
@@ -748,6 +960,7 @@ def answer(
             "question": question,
             "answer": REFUSAL,
             "sources": [],
+            "przypisy": [],
             "in_scope": False,
             "hits": [h.to_dict() for h in all_hits],
             "retrieval_s": round(t_retrieval, 3),
@@ -755,7 +968,10 @@ def answer(
         }
 
     t1 = time.perf_counter()
-    text = chat(build_messages(question, hits), wymus_druga_osobe=True)
+    text = chat(
+        build_messages(question, hits, historia=historia, system=system),
+        wymus_druga_osobe=True,
+    )
     t_generation = time.perf_counter() - t1
 
     if not text.strip():
@@ -774,6 +990,7 @@ def answer(
         "question": question,
         "answer": text,
         "sources": sources,
+        "przypisy": przypisy(hits),
         "in_scope": True,
         "hits": [h.to_dict() for h in hits],
         "retrieval_s": round(t_retrieval, 3),
@@ -784,6 +1001,96 @@ def answer(
 # --------------------------------------------------------------------------
 # Tryb rozmowy - zwykly czat z modelem, bez notatek
 # --------------------------------------------------------------------------
+
+# ==========================================================================
+# TOZSAMOSC - wspolna dla wszystkich trybow
+# ==========================================================================
+#
+# Bez tego agent rozpadal sie na dwa byty. Zapytany "kto cie wykorzystuje" na
+# sciezce z notatkami mowil "jestem Twoim osobistym agentem wiedzy", a na sciezce
+# modelowej - "jestem sztuczna inteligencja stworzona przez Google". Drugie zdanie
+# jest w dodatku nieprawdziwe: pod spodem stoi qwen, nie model Google.
+#
+# Przyczyna: prompt hybrydowy opisywal ZADANIE ("odpowiedz z wiedzy ogolnej"),
+# ale nie mowil, KIM jest odpowiadajacy. Model wypelnial luke tym, co pamieta
+# z treningu - a modele wytrenowane na danych z internetu maja tam pomieszane
+# tozsamosci innych asystentow.
+#
+# Zrodlem prawdy jest notatka w vaulcie, nie stala w kodzie. Dzieki temu zmiana
+# opisu agenta to edycja notatki, a nie zmiana kodu i restart - i ta sama tresc
+# obsluguje zarowno pytania "z notatek", jak i tryb modelowy.
+TOZSAMOSC_ZRODLO = "czym-jest-ten-agent.md"
+
+# Uzywana, gdy notatki jeszcze nie ma w bazie. Krotka, ale musi wystarczyc,
+# zeby model nie zaczal sie przedstawiac jako produkt obcej firmy.
+TOZSAMOSC_ZAPASOWA = """Jestes Personal Knowledge Agent - lokalnym narzedziem, ktore
+odpowiada na pytania uzytkownika na podstawie jego wlasnych notatek. Dzialasz w calosci
+na jego komputerze. Nie jestes produktem Google, OpenAI, Anthropic ani zadnej innej firmy
+i nigdy tak sie nie przedstawiasz. Pod spodem pracuje lokalny model jezykowy uruchomiony
+przez Ollame, ale Twoja tozsamoscia jest ten agent, nie model."""
+
+_tozsamosc_cache: str | None = None
+
+
+def tozsamosc() -> str:
+    """Opis agenta wczytany z notatki systemowej, z zapasem w kodzie."""
+    global _tozsamosc_cache
+    if _tozsamosc_cache is not None:
+        return _tozsamosc_cache
+
+    tekst = ""
+    try:
+        r = get_collection(create=False).get(
+            where={"source": TOZSAMOSC_ZRODLO},
+            include=["documents", "metadatas"],
+        )
+        pary = list(zip(r.get("metadatas") or [], r.get("documents") or []))
+        pary.sort(key=lambda p: (p[0] or {}).get("chunk_index", 0))
+        tekst = "\n\n".join(d for _, d in pary if d)
+    except Exception:  # noqa: BLE001 - brak notatki nie moze wywrocic odpowiadania
+        pass
+
+    _tozsamosc_cache = (tekst.strip() or TOZSAMOSC_ZAPASOWA)[:2500]
+    return _tozsamosc_cache
+
+
+def blok_tozsamosci() -> str:
+    return (
+        "KIM JESTES (obowiazuje we wszystkich trybach, takze gdy odpowiadasz "
+        "z wiedzy ogolnej):\n"
+        f"{tozsamosc()}\n\n"
+        "Nigdy nie przedstawiasz sie jako asystent Google, OpenAI, Anthropic ani "
+        "innej firmy. Zapytany, czym jestes albo kto Cie uzywa, odpowiadasz zgodnie "
+        "z powyzszym opisem - niezaleznie od tego, czy odpowiedz pochodzi z notatek, "
+        "czy z Twojej wiedzy ogolnej.\n\n"
+        "KONTRAKT ZAIMKOW - obowiazuje bezwzglednie:\n"
+        "  \"ja\", \"mnie\", \"moje\"  = agent, czyli Ty\n"
+        "  \"Ty\", \"Ciebie\", \"Twoje\" = uzytkownik, czyli wlasciciel notatek\n\n"
+        "Notatki sa pisane przez uzytkownika w pierwszej osobie. To NIE jest Twoj glos "
+        "- czytasz cudzy zapis i opowiadasz o nim wlascicielowi.\n\n"
+        "Pytanie \"kto Cie wykorzystuje\" dotyczy CIEBIE, agenta. Odpowiada na nie "
+        "uzytkownik jako sprawca:\n"
+        "  DOBRZE: \"Wykorzystujesz mnie Ty - do przeszukiwania wlasnych notatek.\"\n"
+        "  ZLE:    \"Wykorzystuje Cie Patryk Dabek\" - to zdanie robi z uzytkownika agenta.\n"
+        "  ZLE:    \"Jestem Patrykiem Dabkiem\" - to przejecie jego tozsamosci.\n\n"
+        "Odpowiadasz tylko na zadane pytanie. Nie doklejasz faktow o uzytkowniku, "
+        "ktore akurat znalazly sie w kontekscie, a nie wynikaja z pytania - wzrostu, "
+        "miejsca zamieszkania, planow zawodowych.\n\n"
+        "CO POTRAFISZ, A CZEGO NIE - nie wolno Ci tego zmyslac:\n"
+        "  Potrafisz: przeszukiwac notatki i odpowiadac na ich podstawie.\n"
+        "  NIE potrafisz: tworzyc, edytowac, nadpisywac ani usuwac notatek. Nie masz\n"
+        "  dostepu do internetu. Nie wysylasz maili, nie umawiasz spotkan, niczego nie\n"
+        "  uruchamiasz i nie pamietasz niczego miedzy rozmowami poza tym, co jest\n"
+        "  w notatkach.\n\n"
+        "Notatki dopisuje SAM uzytkownik, przyciskiem w interfejsie. Tekst trafia na "
+        "koniec pliku inbox/surowe-RRRR-MM-DD.md - dopisywany, nigdy nadpisywany.\n\n"
+        "Notatki opisuja czynnosci uzytkownika w pierwszej osobie: \"zaktualizowalem\", "
+        "\"zapisalem\", \"zmienilem\". To sa JEGO dzialania, nie Twoje. Zapytany, czy cos "
+        "zrobiles - zmieniles notatke, zapisales cos, wyslales - odpowiadasz, ze nie "
+        "masz takiej mozliwosci. NIGDY nie opisujesz jako wlasnego dzialania czegos, "
+        "o czym przeczytales w notatce.\n\n"
+    )
+
 
 CHAT_SYSTEM = """Jestes pomocnym asystentem rozmawiajacym po polsku.
 
@@ -806,7 +1113,9 @@ def rozmowa(historia: list[dict], temperature: float = 0.4) -> str:
     Wyzsza temperatura niz w RAG (0.4 zamiast 0.1), bo w swobodnej rozmowie
     sztywnosc szkodzi, a nie ma tu ryzyka przeklamania zrodel.
     """
-    wiadomosci = [{"role": "system", "content": CHAT_SYSTEM}] + list(historia)
+    wiadomosci = [
+        {"role": "system", "content": blok_tozsamosci() + CHAT_SYSTEM}
+    ] + list(historia)
     return chat(wiadomosci, temperature=temperature)
 
 
@@ -824,6 +1133,10 @@ Zasady:
    jako notatke, zamiast zgadywac.
 5. Zwracasz sie do uzytkownika w drugiej osobie. Nie piszesz o nim "jestem", "moje".
 6. Piszesz wylacznie alfabetem lacinskim. Nie uzywasz cyrylicy.
+7. WYJATEK od zasady 1: jesli pytanie dotyczy Ciebie samego - czym jestes, kto Cie
+   uzywa, co potrafisz, jak dzialasz - NIE zaczynasz od "W notatkach tego nie ma".
+   Odpowiadasz wprost z opisu w sekcji "KIM JESTES" powyzej. To nie jest wiedza
+   ogolna modelu, tylko Twoja wlasna definicja.
 """
 
 
@@ -832,6 +1145,7 @@ def answer_hybrid(
     k: int = TOP_K,
     max_distance: float | None = MAX_DISTANCE,
     category: str | None = None,
+    historia: list[dict] | None = None,
 ) -> dict:
     """Najpierw notatki. Gdy ich brak - wiedza modelu, ale JAWNIE oznaczona.
 
@@ -844,7 +1158,18 @@ def answer_hybrid(
     dziala zwykly RAG z zakazem wychodzenia poza kontekst. Model dostaje
     swobode wylacznie wtedy, gdy jawnie wiadomo, ze notatek nie ma.
     """
-    wynik = answer(question, k=k, max_distance=max_distance, category=category)
+    # Inny prompt niz w trybie scislym. Tam notatki sa jedynym dozwolonym zrodlem,
+    # tu sa materialem do myslenia - model moze wyciagac wnioski i dopowiadac z wiedzy
+    # ogolnej, byle nie podszywal ich pod cytat. Rozroznienie widac w interfejsie:
+    # zdania z numerem sa poparte notatka, reszta jest podkreslona.
+    wynik = answer(
+        question,
+        k=k,
+        max_distance=max_distance,
+        category=category,
+        historia=historia,
+        system=SYSTEM_HYBRYDA_Z_NOTATKAMI,
+    )
 
     # Dwa niezalezne powody, dla ktorych notatki moga nie wystarczyc:
     #   1. prog nie przepuscil        -> in_scope == False
@@ -857,17 +1182,114 @@ def answer_hybrid(
         return wynik
 
     t0 = time.perf_counter()
-    tekst = chat(
-        [
-            {"role": "system", "content": HYBRYDA_SYSTEM},
-            {"role": "user", "content": question},
-        ],
-        temperature=0.3,
-    )
+    wiadomosci = [{"role": "system", "content": blok_tozsamosci() + HYBRYDA_SYSTEM}]
+    if historia:
+        wiadomosci += [{"role": w["role"], "content": w["content"]} for w in historia[-6:]]
+    wiadomosci.append({"role": "user", "content": question})
+    tekst = chat(wiadomosci, temperature=0.3)
     wynik["answer"] = tekst
     wynik["zrodlo_wiedzy"] = "model"
     wynik["generation_s"] = round(time.perf_counter() - t0, 3)
     return wynik
+
+
+# --------------------------------------------------------------------------
+# Stan modeli - swiatla i przelaczanie
+# --------------------------------------------------------------------------
+#
+# Powod istnienia tego bloku jest pomiarowy, nie kosmetyczny. Przy 8 GB VRAM
+# bge-m3 (664 MB) i qwen3.5:9b (6,4 GB) nie mieszcza sie wygodnie razem - gdy oba
+# sa rezydentne, Ollama zaczyna je przerzucac miedzy VRAM a RAM przy kazdym
+# zapytaniu i mediana odpowiedzi skacze z ~6 s do 29 s. Do tej pory ratunkiem bylo
+# `ollama stop` w konsoli. Teraz widac to na ekranie i da sie klikniac.
+
+def stan_modeli() -> dict:
+    """Trzy stany dla kazdego modelu: zaladowany / dostepny / brak.
+
+    zielone  - model siedzi w pamieci, odpowie natychmiast
+    zolte    - model jest pobrany, ale trzeba go wczytac (pierwsze pytanie wolniejsze)
+    czerwone - modelu nie ma, trzeba `ollama pull`
+    """
+    out: dict = {"ollama": "ok", "modele": []}
+    try:
+        tags = requests.get(f"{OLLAMA_URL}/api/tags", timeout=10).json()
+        pobrane = {m.get("name", "") for m in tags.get("models", [])}
+    except Exception as exc:  # noqa: BLE001
+        return {"ollama": f"blad: {exc}", "modele": []}
+
+    zaladowane: dict[str, dict] = {}
+    try:
+        ps = requests.get(f"{OLLAMA_URL}/api/ps", timeout=10).json()
+        for m in ps.get("models", []):
+            zaladowane[m.get("name", "")] = m
+    except Exception:  # noqa: BLE001 - starsze Ollamy nie maja /api/ps
+        pass
+
+    def dopasuj(nazwa: str, zbior) -> str | None:
+        """Ollama zwraca 'bge-m3:latest' tam, gdzie w configu jest 'bge-m3'."""
+        baza = nazwa.split(":")[0]
+        for n in zbior:
+            if n == nazwa or n.split(":")[0] == baza:
+                return n
+        return None
+
+    for rola, nazwa in (("embedding", EMBED_MODEL), ("generowanie", CHAT_MODEL)):
+        pelna = dopasuj(nazwa, pobrane)
+        w_pamieci = dopasuj(nazwa, zaladowane.keys()) if pelna else None
+        info = zaladowane.get(w_pamieci or "", {})
+
+        if not pelna:
+            swiatlo = "czerwone"
+        elif w_pamieci:
+            swiatlo = "zielone"
+        else:
+            swiatlo = "zolte"
+
+        vram = info.get("size_vram") or 0
+        out["modele"].append(
+            {
+                "rola": rola,
+                "nazwa": nazwa,
+                "pelna_nazwa": pelna or nazwa,
+                "swiatlo": swiatlo,
+                "vram_mb": round(vram / 1024 / 1024) if vram else 0,
+                "wygasa": info.get("expires_at", ""),
+            }
+        )
+
+    suma = sum(m["vram_mb"] for m in out["modele"])
+    out["vram_mb_razem"] = suma
+    # Prog ostrzegawczy dobrany pod 8 GB karty - powyzej ~6.5 GB zaczyna sie
+    # przerzucanie warstw i czasy odpowiedzi rosna kilkukrotnie.
+    out["ostrzezenie_vram"] = suma > 6500
+    return out
+
+
+def przelacz_model(nazwa: str, wlacz: bool) -> dict:
+    """Wczytuje model do pamieci albo go z niej zwalnia.
+
+    Ollama nie ma osobnego endpointu do zaladowania i zwolnienia - robi sie to
+    pustym zapytaniem z parametrem keep_alive. Zero zwalnia natychmiast.
+    """
+    czy_embed = nazwa.split(":")[0] == EMBED_MODEL.split(":")[0]
+    keep = "30m" if wlacz else 0
+    try:
+        if czy_embed:
+            r = requests.post(
+                f"{OLLAMA_URL}/api/embed",
+                json={"model": nazwa, "input": [""] if wlacz else [], "keep_alive": keep},
+                timeout=180,
+            )
+        else:
+            r = requests.post(
+                f"{OLLAMA_URL}/api/generate",
+                json={"model": nazwa, "prompt": "", "keep_alive": keep, "stream": False},
+                timeout=180,
+            )
+        r.raise_for_status()
+        return {"ok": True, "nazwa": nazwa, "wlaczony": wlacz}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "nazwa": nazwa, "blad": str(exc)}
 
 
 def health() -> dict:

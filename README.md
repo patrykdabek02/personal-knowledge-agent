@@ -5,15 +5,31 @@ Lokalny agent RAG odpowiadający na pytania na podstawie własnych notatek, z cy
 **Wyniki na 38 pytaniach testowych:** merytorycznie poprawna odpowiedź w 88% przypadków, poprawne źródło na 1. miejscu w 88%, odmowa na pytania spoza bazy wiedzy w 100%. **Zero konfabulacji** — w 32 odpowiedziach model ani razu nie wymyślił faktu ani nie zacytował nieistniejącego źródła. Mediana czasu odpowiedzi 5,9 s na RTX 4060 Laptop (8 GB VRAM).
 
 > **Stan dokumentacji.** Liczby w tym README pochodzą z pomiaru z 2026-08-04 (14 notatek,
-> 58 fragmentów, próg 0,52). Od tego czasu doszły: **wyszukiwanie hybrydowe BM25 + wektory
-> łączone metodą RRF**, tryb hybrydowy „notatki, a gdy ich brak — wiedza modelu, jawnie
-> oznaczona", interfejs webowy z czterema trybami, historia rozmów i dopisywanie notatek
-> z poziomu przeglądarki. Próg podniesiono do 0,65, a baza urosła do 26 notatek i 124
-> fragmentów.
+> 58 fragmentów, próg 0,52). Od tego czasu doszło sporo:
+>
+> - **wyszukiwanie hybrydowe** BM25 + wektory łączone metodą RRF, z lekkim stemmerem
+>   dla polskiego (bez niego „baza wektorowa" nie trafia w „bazy wektorowej")
+> - **Contextual Retrieval** — model dopisuje do fragmentu zdanie osadzające go
+>   w całej notatce przed embedowaniem (`indexer.py --kontekst`)
+> - **interfejs webowy** z czterema trybami, przypisami `[1]` i oznaczaniem zdań
+>   bez pokrycia w notatkach
+> - **`przetworz_inbox.py`** — rozbija surowe zapiski na pojedyncze fakty
+>   i proponuje, do której notatki i sekcji trafią
+> - **zbieranie wpadek** — zła odpowiedź jednym kliknięciem trafia do zestawu testowego
+>
+> Próg podniesiono do 0,65, baza urosła do 26 notatek i ~132 fragmentów.
 >
 > Świadomie **nie aktualizuję tu tabel z wynikami** — ewaluacja nie została powtórzona po
-> włączeniu BM25, a przepisanie liczb bez ponownego pomiaru byłoby zgadywaniem. Tabele
+> tych zmianach, a przepisanie liczb bez ponownego pomiaru byłoby zgadywaniem. Tabele
 > poniżej opisują konfigurację, dla której faktycznie je zmierzono.
+>
+> **Wniosek przekrojowy z tych zmian:** wszystko, co miało być gwarancją, musiało
+> ostatecznie trafić do kodu, nie do promptu. Cyrylica, pierwsza osoba, status sekcji
+> („propozycja" kontra stan faktyczny), weryfikacja cytatów, limit liczby faktów,
+> zakaz zakładania zbędnych plików — każde z tych ograniczeń najpierw próbowałem
+> opisać w instrukcji dla modelu i za każdym razem trzymało tylko czasem. Co gorsza,
+> dopisywanie kolejnych reguł wypychało wcześniejsze: jeden z przebiegów cofnął zysk
+> poprzedniego wyłącznie przez dołożenie trzech zdań do promptu.
 
 ---
 

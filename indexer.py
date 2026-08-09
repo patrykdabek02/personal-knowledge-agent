@@ -147,8 +147,86 @@ def window_split(text: str, size: int = CHUNK_WORDS, overlap: int = CHUNK_OVERLA
     return out
 
 
-def build_chunks(rel_path: str, text: str) -> list[dict]:
-    """Zamienia plik w liste fragmentow gotowych do embeddingu."""
+# --------------------------------------------------------------------------
+# Contextual Retrieval
+# --------------------------------------------------------------------------
+#
+# Technika z artykulu Anthropic (wrzesien 2024). Problem, ktory rozwiazuje,
+# wystapil u nas doslownie: fragment "Widelki 7 500 - 9 000, podloga 7 000"
+# nie mowi, DLA JAKIEJ ROLI te kwoty obowiazuja. Agent dwa razy podal je jako
+# widelki dla stazu part-time, cytujac zrodlo - retrieval trafil, cytowanie bylo
+# uczciwe, a rada nie do zastosowania.
+#
+# Rozwiazanie: przed embedowaniem model dopisuje do fragmentu jedno-dwa zdania
+# osadzajace go w calej notatce. Tresc notatki sie NIE zmienia - zmienia sie to,
+# co trafia do bazy.
+#
+# Zmierzone przez Anthropic: samo kontekstowanie -35% nieudanych trafien,
+# razem z BM25 -49%, z rerankerem -67%. My mamy juz BM25.
+#
+# Uwaga na koszt: Anthropic uzywa cache'u promptow, zeby nie placic za caly
+# dokument przy kazdym fragmencie. Ollama tego nie ma, ale przy notatkach
+# rzedu kilku kB i ~124 fragmentach to kilka minut jednorazowo.
+
+KONTEKST_PROMPT = """<dokument>
+{dokument}
+</dokument>
+
+Oto fragment tego dokumentu, ktory chcemy osadzic w kontekscie calosci:
+<fragment>
+{fragment}
+</fragment>
+
+Napisz jedno lub dwa krotkie zdania, ktore umiejscawiaja ten fragment w calym
+dokumencie - tak, zeby wyszukiwarka mogla go trafnie znalezc, a czytajacy
+wiedzial, CZEGO on dotyczy i W JAKIM ZAKRESIE obowiazuje.
+
+Zawrzyj zakres stosowania, jesli wynika z dokumentu: jakiego rodzaju roli,
+sytuacji albo okresu dotycza podane liczby i ustalenia.
+
+NAJWAZNIEJSZE OGRANICZENIE: uzywasz WYLACZNIE informacji, ktore stoja w tym
+dokumencie. Nie dodajesz typow zatrudnienia, okresow, form wspolpracy ani
+warunkow, ktorych w nim nie ma. Jesli dokument nie mowi, czego dotycza liczby -
+piszesz o czym jest fragment i na tym konczysz, zamiast zgadywac zakres.
+
+Dopisanie zakresu, ktorego w dokumencie nie ma, jest gorsze niz brak kontekstu:
+fragment zacznie byc znajdowany przy pytaniach, ktorych NIE dotyczy.
+
+Odpowiedz WYLACZNIE tym kontekstem, bez wstepu, bez powtarzania fragmentu.
+Jedno lub dwa zdania. Po polsku, alfabetem lacinskim."""
+
+
+def zbuduj_kontekst(dokument: str, fragment: str) -> str:
+    """Jedno-dwa zdania osadzajace fragment w calym dokumencie."""
+    # Dokument obcinamy, bo przy dlugiej notatce prompt zjadalby cale okno
+    # i wypychal z niego sam fragment.
+    if len(dokument) > 12000:
+        dokument = dokument[:12000] + "\n[...]"
+    try:
+        kontekst = core.chat(
+            [{"role": "user",
+              "content": KONTEKST_PROMPT.format(dokument=dokument, fragment=fragment)}],
+            temperature=0.0,
+        ).strip()
+    except Exception as exc:  # noqa: BLE001 - brak kontekstu jest lepszy niz brak indeksu
+        print(f"    [kontekst nieudany: {exc}]")
+        return ""
+    # Model bywa gadatliwy mimo instrukcji; trzy zdania wystarcza az nadto.
+    return " ".join(kontekst.split())[:400]
+
+
+def build_chunks(rel_path: str, text: str, kontekstowo: bool = False) -> list[dict]:
+    """Zamienia plik w liste fragmentow gotowych do embeddingu.
+
+    Przy kontekstowo=True kazdy fragment dostaje dopisane zdanie osadzajace go
+    w calej notatce. Idzie ono do pola `document`, czyli do embeddingu ORAZ do
+    indeksu BM25 - u Anthropic to sa dwie osobne techniki (Contextual Embeddings
+    i Contextual BM25), u nas wychodza za darmo razem, bo BM25 czyta dokumenty
+    z tej samej kolekcji.
+
+    Oryginalna tresc ladu je w metadanych, zeby dalo sie ja pokazac w przypisach
+    bez doklejonego kontekstu.
+    """
     fm, body = split_frontmatter(text)
     path = Path(rel_path)
     title = fm.get("title") or path.stem
@@ -162,7 +240,15 @@ def build_chunks(rel_path: str, text: str) -> list[dict]:
                 continue
             # Prefiks kontekstowy - fragment "wie", z czego pochodzi.
             prefix = f"{title} > {heading}" if heading else title
-            document = f"{prefix}\n\n{piece.strip()}"
+            tresc = piece.strip()
+
+            kontekst = ""
+            if kontekstowo:
+                print(f"    kontekst {index + 1}...", end="\r", flush=True)
+                kontekst = zbuduj_kontekst(body, tresc)
+
+            document = f"{prefix}\n\n" + (f"{kontekst}\n\n{tresc}" if kontekst else tresc)
+
             chunks.append(
                 {
                     "id": f"{rel_path}::{index}",
@@ -175,6 +261,8 @@ def build_chunks(rel_path: str, text: str) -> list[dict]:
                         "category": category,
                         "chunk_index": index,
                         "tags": fm.get("tags", ""),
+                        "kontekst": kontekst,
+                        "tekst_oryginalny": tresc[:1500],
                     },
                 }
             )
@@ -217,7 +305,17 @@ def main() -> int:
     ap.add_argument("--path", required=True, help="folder z notatkami (.md / .txt)")
     ap.add_argument("--rebuild", action="store_true", help="wyczysc kolekcje i zbuduj od zera")
     ap.add_argument("--dry-run", action="store_true", help="policz fragmenty, nic nie zapisuj")
+    ap.add_argument("--kontekst", action="store_true",
+                    help="Contextual Retrieval: model dopisuje kontekst do kazdego fragmentu "
+                         "przed embedowaniem (wolniejsze, wymaga --rebuild)")
     args = ap.parse_args()
+
+    if args.kontekst and not args.rebuild:
+        # Bez przebudowy powstalaby baza mieszana: czesc fragmentow z kontekstem,
+        # czesc bez. Dystanse przestalyby byc porownywalne miedzy soba, a prog
+        # odciecia straciłby sens.
+        print("BLAD: --kontekst wymaga --rebuild (zmienia sie tresc embedowana).")
+        return 1
 
     root = Path(args.path).expanduser().resolve()
     if not root.is_dir():
@@ -266,7 +364,7 @@ def main() -> int:
             stats["bez_zmian"] += 1
             continue
 
-        chunks = build_chunks(rel, text)
+        chunks = build_chunks(rel, text, kontekstowo=args.kontekst)
         if not chunks:
             stats["puste"] += 1
             print(f"  pominiety (brak tresci): {rel}")

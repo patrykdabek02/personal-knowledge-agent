@@ -29,6 +29,22 @@ zrzuty/
 # pliki przygotowane do przeniesienia do vaultu
 _do_vaultu*.md
 
+# Narzedzie do eksportu Messengera. Dziala, ale zostaje poza repo:
+# operuje na cudzych wiadomosciach i na tych danych nie ma czego wyciagac
+# (166 sesji dalo jeden fakt). Trzymane lokalnie na wypadek innego zrodla.
+messenger.py
+
+# eksport Messengera i wszystko, co z niego powstaje - cudze wiadomosci
+propozycje-*.md
+kandydaci-faktow.jsonl
+messenger_manifest.json
+inbox_manifest.json
+facebook-*/
+messages/
+
+# zgloszone zle odpowiedzi - zawieraja pelna tresc odpowiedzi, czyli notatki
+wpadki.jsonl
+
 # wyniki testow moga zawierac fragmenty notatek w kolumnie 'odpowiedz'
 results.csv
 results*.csv
